@@ -1,0 +1,78 @@
+import React from 'react';
+import { Wifi, Battery, Signal, Code, Sparkles, Smartphone, ArrowLeft } from 'lucide-react';
+
+interface Props {
+  children: React.ReactNode;
+  activeTab: string;
+  isCodeView: boolean;
+  onToggleCodeView: () => void;
+  onBack?: () => void;
+}
+
+export const MobileFrame: React.FC<Props> = ({
+  children,
+  activeTab,
+  isCodeView,
+  onToggleCodeView,
+  onBack,
+}) => {
+  const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  return (
+    <div className="min-h-screen bg-slate-900 text-slate-100 flex flex-col items-center justify-center p-0 sm:p-4">
+      {/* Mobile Shell Container */}
+      <div className="w-full max-w-md h-screen sm:h-[92vh] max-h-[920px] bg-slate-100 rounded-none sm:rounded-[36px] shadow-2xl border-0 sm:border-8 border-slate-950 flex flex-col relative overflow-hidden ring-1 ring-slate-800/40">
+        
+        {/* Android Status Bar */}
+        <div className="h-7 bg-slate-900 text-white px-5 flex justify-between items-center text-[11px] font-medium z-30 select-none">
+          <span className="font-semibold tracking-tight">{currentTime}</span>
+          <div className="flex items-center gap-2">
+            <Signal className="w-3 h-3" />
+            <Wifi className="w-3 h-3" />
+            <div className="flex items-center gap-0.5">
+              <span className="text-[10px]">98%</span>
+              <Battery className="w-3.5 h-3.5 fill-current" />
+            </div>
+          </div>
+        </div>
+
+        {/* Top App Header & Code Toggle */}
+        <div className="bg-slate-900 text-white px-4 py-2 flex justify-between items-center border-b border-slate-800 z-30">
+          <div className="flex items-center gap-2">
+            {onBack && (
+              <button onClick={onBack} className="p-1 -ml-1 text-slate-300 hover:text-white">
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+            )}
+            <div>
+              <div className="flex items-center gap-1.5 text-blue-400 text-[10px] font-bold uppercase tracking-wider">
+                <Smartphone className="w-3 h-3" />
+                <span>TruckBook Android</span>
+              </div>
+              <h1 className="text-xs font-bold text-slate-200 capitalize">
+                {isCodeView ? 'Flutter Source Code' : `${activeTab} View`}
+              </h1>
+            </div>
+          </div>
+
+          <button
+            onClick={onToggleCodeView}
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold border transition-all ${
+              isCodeView
+                ? 'bg-blue-600 border-blue-500 text-white shadow-sm'
+                : 'bg-slate-800/90 border-slate-700 text-blue-300 hover:bg-slate-700'
+            }`}
+          >
+            <Code className="w-3.5 h-3.5" />
+            <span>{isCodeView ? 'App Preview' : 'Flutter Code'}</span>
+          </button>
+        </div>
+
+        {/* Dynamic Screen View */}
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};

@@ -1,0 +1,6 @@
+{
+  "name": "TruckBook - Transport & Fleet Management",
+  "description": "Production-grade offline-first transport and truck management mobile application architecture and suite.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
