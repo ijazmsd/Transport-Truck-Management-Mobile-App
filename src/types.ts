@@ -8,11 +8,13 @@ export type SalaryType = 'Monthly' | 'Per Trip' | 'Percentage';
 
 export type TripStatus = 'Draft' | 'Assigned' | 'In Progress' | 'Completed' | 'Cancelled';
 
-export type UserRole = 'Admin' | 'Manager' | 'Driver';
+export type UserRole = 'Provider Admin' | 'Company Admin' | 'Manager' | 'Accountant' | 'Driver' | 'Admin';
 
-export type UserStatus = 'Pending Approval' | 'Active' | 'Rejected' | 'Deactivated';
+export type UserStatus = 'Pending Approval' | 'Active' | 'Rejected' | 'Suspended' | 'Deactivated';
 
-export type SubscriptionPlanId = 'monthly' | 'half_yearly' | 'yearly';
+export type OnboardingStatus = 'registered' | 'subscribed' | 'company_created' | 'completed';
+
+export type SubscriptionPlanId = 'monthly' | 'half_yearly' | 'yearly' | string;
 
 export type SubscriptionStatus = 'Active' | 'Expiring Soon' | 'Expired' | 'Suspended' | 'Pending';
 
@@ -35,7 +37,7 @@ export type ExpenseCategory =
   | 'Office'
   | 'Other';
 
-export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Cheque' | 'Company Card' | 'Other';
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Cheque' | 'Company Card' | 'Credit/Debit Card' | 'EasyPaisa/JazzCash' | 'Stripe (Mock)' | 'Other';
 
 export type DocType = 'Registration' | 'Insurance' | 'Fitness Certificate' | 'Route Permit' | 'Other';
 
@@ -68,10 +70,12 @@ export interface User {
   name: string;
   email: string;
   phone: string;
+  password?: string;
   role: UserRole;
   status: UserStatus;
+  tenantId?: string; // Tenant / Transport Company ID (undefined for Provider Admin)
+  companyId?: string; // Alias for backward compatibility
   driverId?: string; // Links to Driver entity if role === 'Driver'
-  companyId?: string;
   subscriptionId?: string;
   avatar?: string;
   notes?: string;
@@ -87,7 +91,13 @@ export interface SubscriptionPlan {
   badge?: string;
   description: string;
   features: string[];
+  maxUsers: number;
+  maxDrivers: number;
+  maxTrucks: number;
+  storageGb?: number;
   isActive: boolean;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export type NotificationCategory =
@@ -97,12 +107,15 @@ export type NotificationCategory =
   | 'payment'
   | 'user'
   | 'subscription'
-  | 'expense';
+  | 'expense'
+  | 'provider'
+  | 'company';
 
 export interface Subscription {
   id: string;
+  tenantId: string;
   userId?: string;
-  companyId: string;
+  companyId?: string;
   planId: SubscriptionPlanId;
   planName: string;
   durationMonths: number;
@@ -111,29 +124,58 @@ export interface Subscription {
   status: SubscriptionStatus;
   pricePaid: number;
   paymentMethod?: PaymentMethod;
+  paymentStatus?: 'Completed' | 'Pending' | 'Failed';
   autoRenew: boolean;
+  maxUsers: number;
+  maxDrivers: number;
+  maxTrucks: number;
   notes?: string;
   createdAt: number;
   updatedAt?: number;
 }
 
+export interface PaymentRecord {
+  id: string;
+  tenantId: string;
+  subscriptionId: string;
+  userId: string;
+  amount: number;
+  currency: Currency;
+  paymentMethod: PaymentMethod;
+  status: 'Success' | 'Pending' | 'Failed';
+  transactionRef: string;
+  planName: string;
+  billingCycle: string;
+  createdAt: number;
+}
+
 export interface Company {
   id: string;
   name: string;
+  registrationNumber?: string;
   phone: string;
   email: string;
   address: string;
+  city?: string;
+  country?: string;
   currency: Currency;
+  timeZone?: string;
+  status?: 'Active' | 'Suspended' | 'Pending';
+  ownerUserId?: string;
   taxNumber?: string;
   logoUrl?: string;
   subscriptionId?: string;
+  onboardingStatus?: OnboardingStatus;
   createdAt: number;
   updatedAt: number;
 }
 
+export type Tenant = Company;
+
 export interface TruckDocument {
   id: string;
   truckId: string;
+  tenantId?: string;
   docType: DocType;
   docNumber: string;
   issueDate: string; // ISO format
@@ -144,6 +186,7 @@ export interface TruckDocument {
 
 export interface Truck {
   id: string;
+  tenantId?: string;
   regNumber: string;
   truckType: string;
   make: string;
@@ -164,8 +207,10 @@ export interface Truck {
 
 export interface Driver {
   id: string;
+  tenantId?: string;
   name: string;
   phone: string;
+  email?: string;
   cnic: string;
   licenseNumber: string;
   licenseExpiryDate: string;
@@ -175,6 +220,9 @@ export interface Driver {
   salary: number; // monthly amount, per-trip rate, or percentage (e.g. 10)
   status: DriverStatus;
   assignedTruckId?: string;
+  loginEmail?: string;
+  tempPassword?: string;
+  inviteSent?: boolean;
   notes?: string;
   createdAt: number;
   updatedAt: number;
@@ -182,6 +230,7 @@ export interface Driver {
 
 export interface Customer {
   id: string;
+  tenantId?: string;
   name: string;
   companyName: string;
   phone: string;
@@ -196,6 +245,7 @@ export interface Customer {
 
 export interface Supplier {
   id: string;
+  tenantId?: string;
   name: string;
   category: SupplierType;
   phone: string;
@@ -210,6 +260,7 @@ export interface Supplier {
 
 export interface SupplierTransaction {
   id: string;
+  tenantId?: string;
   supplierId: string;
   truckId?: string;
   tripId?: string;
@@ -224,6 +275,7 @@ export interface SupplierTransaction {
 
 export interface FuelEntry {
   id: string;
+  tenantId?: string;
   truckId: string;
   tripId?: string;
   driverId?: string;
@@ -244,6 +296,7 @@ export interface FuelEntry {
 
 export interface MaintenanceRecord {
   id: string;
+  tenantId?: string;
   truckId: string;
   serviceType: MaintenanceType;
   serviceDate: string;
@@ -259,6 +312,7 @@ export interface MaintenanceRecord {
 
 export interface DriverSalarySettlement {
   id: string;
+  tenantId?: string;
   driverId: string;
   monthPeriod: string; // e.g. "2026-08"
   baseSalary: number;
@@ -276,6 +330,7 @@ export interface DriverSalarySettlement {
 
 export interface Trip {
   id: string;
+  tenantId?: string;
   tripNumber: string;
   truckId: string;
   driverId: string;
@@ -303,6 +358,7 @@ export interface Trip {
 
 export interface Expense {
   id: string;
+  tenantId?: string;
   tripId?: string;
   truckId?: string;
   driverId?: string;
@@ -328,6 +384,7 @@ export interface Expense {
 
 export interface CustomerTransaction {
   id: string;
+  tenantId?: string;
   customerId: string;
   tripId?: string;
   type: 'Opening Balance' | 'Trip Invoice' | 'Payment' | 'Adjustment';
@@ -341,12 +398,14 @@ export interface CustomerTransaction {
 
 export interface AppNotification {
   id: string;
+  tenantId?: string; // Scoped to tenant, or undefined for platform provider
   userId?: string; // target user id, or undefined for broadcast / admin
   targetRole?: UserRole | 'all';
+  isProviderNotification?: boolean;
   title: string;
   message: string;
-  category: 'document' | 'maintenance' | 'trip' | 'payment' | 'user' | 'subscription' | 'expense';
-  type?: 'registration' | 'approval' | 'rejection' | 'subscription' | 'expense' | 'system';
+  category: NotificationCategory;
+  type?: 'registration' | 'approval' | 'rejection' | 'subscription' | 'expense' | 'system' | 'payment';
   severity: 'info' | 'warning' | 'urgent' | 'success';
   date: string;
   isRead: boolean;
@@ -360,3 +419,4 @@ export interface TimeRangeFilter {
   startDate: string;
   endDate: string;
 }
+

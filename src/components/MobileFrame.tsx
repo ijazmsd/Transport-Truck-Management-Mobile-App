@@ -7,8 +7,9 @@ import {
   Smartphone,
   ArrowLeft,
   Bell,
+  Building2,
 } from 'lucide-react';
-import { User } from '../types';
+import { User, Company } from '../types';
 import { UserSwitcher } from './UserSwitcher';
 
 interface Props {
@@ -24,6 +25,11 @@ interface Props {
   onSelectUser?: (user: User) => void;
   onOpenUserManagement?: () => void;
   onOpenRegistration?: () => void;
+  companies?: Company[];
+  activeTenantId?: string;
+  onSwitchTenant?: (tenantId: string) => void;
+  onOpenClientRegistration?: () => void;
+  currentCompany?: Company;
 }
 
 export const MobileFrame: React.FC<Props> = ({
@@ -39,6 +45,11 @@ export const MobileFrame: React.FC<Props> = ({
   onSelectUser,
   onOpenUserManagement,
   onOpenRegistration,
+  companies = [],
+  activeTenantId,
+  onSwitchTenant,
+  onOpenClientRegistration,
+  currentCompany,
 }) => {
   const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -72,9 +83,23 @@ export const MobileFrame: React.FC<Props> = ({
               <div className="flex items-center gap-1 text-blue-400 text-[10px] font-bold uppercase tracking-wider">
                 <Smartphone className="w-3 h-3 shrink-0" />
                 <span className="truncate">TruckBook</span>
+                {currentCompany && currentUser?.role !== 'Provider Admin' && (
+                  <span className="text-[9px] text-slate-400 font-normal truncate max-w-[85px]">
+                    • {currentCompany.name}
+                  </span>
+                )}
+                {currentUser?.role === 'Provider Admin' && (
+                  <span className="text-[9px] text-amber-400 font-extrabold truncate">
+                    • Root Provider
+                  </span>
+                )}
               </div>
               <h1 className="text-xs font-bold text-slate-200 capitalize truncate">
-                {isCodeView ? 'Flutter Source Code' : `${activeTab} View`}
+                {isCodeView
+                  ? 'Flutter Source Code'
+                  : currentUser?.role === 'Provider Admin' && activeTab === 'dashboard'
+                  ? 'SaaS Super Admin'
+                  : `${activeTab} View`}
               </h1>
             </div>
           </div>
@@ -96,7 +121,7 @@ export const MobileFrame: React.FC<Props> = ({
               </button>
             )}
 
-            {/* Role & User Switcher */}
+            {/* Role & User & Tenant Switcher */}
             {currentUser && onSelectUser && onOpenUserManagement && onOpenRegistration && (
               <UserSwitcher
                 currentUser={currentUser}
@@ -104,6 +129,10 @@ export const MobileFrame: React.FC<Props> = ({
                 onSelectUser={onSelectUser}
                 onOpenUserManagement={onOpenUserManagement}
                 onOpenRegistration={onOpenRegistration}
+                companies={companies}
+                activeTenantId={activeTenantId}
+                onSwitchTenant={onSwitchTenant}
+                onOpenClientRegistration={onOpenClientRegistration}
               />
             )}
 
@@ -131,4 +160,3 @@ export const MobileFrame: React.FC<Props> = ({
     </div>
   );
 };
-

@@ -19,6 +19,8 @@ import {
   SubscriptionPlanId,
   SubscriptionStatus,
   UserStatus,
+  PaymentMethod,
+  PaymentRecord,
 } from './types';
 import { db } from './data/db';
 import { MobileFrame } from './components/MobileFrame';
@@ -41,6 +43,8 @@ import { UserManagementModal } from './components/UserManagementModal';
 import { UserRegistrationModal } from './components/UserRegistrationModal';
 import { SubscriptionModal } from './components/SubscriptionModal';
 import { DriverExpenseModal } from './components/DriverExpenseModal';
+import { ClientRegistrationModal } from './components/ClientRegistrationModal';
+import { ProviderAdminView } from './components/ProviderAdminView';
 import {
   Truck as TruckIcon,
   Users,
@@ -72,6 +76,7 @@ export default function App() {
   const [isNotificationOpen, setIsNotificationOpen] = useState(false);
   const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
   const [isRegistrationOpen, setIsRegistrationOpen] = useState(false);
+  const [isClientRegistrationOpen, setIsClientRegistrationOpen] = useState(false);
   const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
   const [isDriverExpenseOpen, setIsDriverExpenseOpen] = useState(false);
 
@@ -88,6 +93,8 @@ export default function App() {
 
   // Core Data States loaded from Local Storage / SQLite engine
   const [company, setCompany] = useState<Company>(() => db.getCompany());
+  const [companies, setCompanies] = useState<Company[]>(() => db.getCompanies());
+  const [activeTenantId, setActiveTenantId] = useState<string>(() => db.getActiveTenantId());
   const [trucks, setTrucks] = useState<Truck[]>(() => db.getTrucks());
   const [drivers, setDrivers] = useState<Driver[]>(() => db.getDrivers());
   const [customers, setCustomers] = useState<Customer[]>(() => db.getCustomers());
@@ -114,10 +121,18 @@ export default function App() {
   const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>(() =>
     db.getSubscriptionPlans()
   );
+  const [allSubscriptions, setAllSubscriptions] = useState<Subscription[]>(() =>
+    db.getSubscriptions()
+  );
+  const [allPayments, setAllPayments] = useState<PaymentRecord[]>(() =>
+    db.getPayments()
+  );
 
   // Sync state from DB
   const refreshState = () => {
     setCompany(db.getCompany());
+    setCompanies(db.getCompanies());
+    setActiveTenantId(db.getActiveTenantId());
     setTrucks(db.getTrucks());
     setDrivers(db.getDrivers());
     setCustomers(db.getCustomers());
@@ -134,6 +149,8 @@ export default function App() {
     setCurrentUser(db.getCurrentUser());
     setActiveSubscription(db.getActiveSubscription());
     setSubscriptionPlans(db.getSubscriptionPlans());
+    setAllSubscriptions(db.getSubscriptions());
+    setAllPayments(db.getPayments());
   };
 
   // Check subscription alerts periodically
@@ -267,7 +284,7 @@ export default function App() {
     planId: SubscriptionPlanId,
     durationMonths: number,
     pricePaid: number,
-    paymentMethod: string
+    paymentMethod: PaymentMethod
   ) => {
     db.createSubscription(planId, durationMonths, pricePaid, paymentMethod);
     refreshState();
@@ -290,6 +307,53 @@ export default function App() {
       };
       db.saveSubscription(updatedSub);
       db.checkSubscriptionAlerts();
+      refreshState();
+    }
+  };
+
+  // SaaS Multi-Tenant Handlers
+  const handleRegisterClient = (data: {
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+    companyName: string;
+    city: string;
+    address: string;
+    planId: SubscriptionPlanId;
+    paymentMethod: PaymentMethod;
+  }) => {
+    const result = db.registerClient(data);
+    setIsClientRegistrationOpen(false);
+    // Auto switch to the newly registered client admin
+    db.setActiveTenantId(result.company.id);
+    db.setCurrentUserId(result.user.id);
+    refreshState();
+  };
+
+  const handleSwitchTenant = (tenantId: string) => {
+    db.setActiveTenantId(tenantId);
+    // Switch to first user in that tenant
+    const tenantUsers = db.getUsers().filter((u) => u.tenantId === tenantId);
+    if (tenantUsers.length > 0) {
+      db.setCurrentUserId(tenantUsers[0].id);
+    }
+    refreshState();
+  };
+
+  const handleUpdatePlan = (updatedPlan: SubscriptionPlan) => {
+    db.saveSubscriptionPlan(updatedPlan);
+    refreshState();
+  };
+
+  const handleToggleCompanyStatus = (companyId: string) => {
+    const comp = companies.find((c) => c.id === companyId);
+    if (comp) {
+      const updated: Company = {
+        ...comp,
+        isSaaSActive: comp.isSaaSActive === false ? true : false,
+        updatedAt: Date.now(),
+      };
+      db.saveCompany(updated);
       refreshState();
     }
   };
@@ -414,6 +478,11 @@ export default function App() {
       onSelectUser={handleSelectUser}
       onOpenUserManagement={() => setIsUserManagementOpen(true)}
       onOpenRegistration={() => setIsRegistrationOpen(true)}
+      companies={companies}
+      activeTenantId={activeTenantId}
+      onSwitchTenant={handleSwitchTenant}
+      onOpenClientRegistration={() => setIsClientRegistrationOpen(true)}
+      currentCompany={company}
     >
       {isCodeView ? (
         <FlutterCodeViewer />
@@ -455,13 +524,13 @@ export default function App() {
             <button
               onClick={() => {
                 // Switch back to Admin to review or continue testing
-                const adminUser = users.find((u) => u.role === 'Admin') || users[0];
+                const adminUser = users.find((u) => u.role === 'Admin' || u.role === 'Company Admin') || users[0];
                 handleSelectUser(adminUser);
               }}
               className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition"
             >
               <LogIn className="w-4 h-4" />
-              <span>Switch Back to Admin Tariq</span>
+              <span>Switch Back to Admin</span>
             </button>
 
             <button
@@ -475,7 +544,7 @@ export default function App() {
       ) : (
         <>
           {/* Subscription Expired Warning Banner (if applicable) */}
-          {activeSubscription && activeSubscription.status === 'Expired' && (
+          {activeSubscription && activeSubscription.status === 'Expired' && currentUser.role !== 'Provider Admin' && (
             <div className="bg-rose-600 text-white px-3.5 py-2 flex items-center justify-between text-xs shadow-md shrink-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <AlertTriangle className="w-4 h-4 shrink-0 animate-bounce" />
@@ -492,8 +561,25 @@ export default function App() {
             </div>
           )}
 
-          {/* Main Dashboard Screen */}
-          {activeTab === 'dashboard' && (
+          {/* Main Dashboard / Provider Admin Screen */}
+          {activeTab === 'dashboard' && currentUser.role === 'Provider Admin' && (
+            <ProviderAdminView
+              companies={companies}
+              activeTenantId={activeTenantId}
+              onSwitchTenant={handleSwitchTenant}
+              onOpenRegisterClient={() => setIsClientRegistrationOpen(true)}
+              allSubscriptions={allSubscriptions}
+              allPayments={allPayments}
+              plans={subscriptionPlans}
+              onUpdatePlan={handleUpdatePlan}
+              onToggleCompanyStatus={handleToggleCompanyStatus}
+              allUsers={users}
+              allTrucksCount={trucks.length}
+              allDriversCount={drivers.length}
+            />
+          )}
+
+          {activeTab === 'dashboard' && currentUser.role !== 'Provider Admin' && (
             <DashboardView
               company={company}
               trucks={trucks}
@@ -864,6 +950,14 @@ export default function App() {
               setInitialExpenseTripId(undefined);
             }}
             onSubmitExpense={(exp) => handleSaveExpense(exp as Expense)}
+          />
+
+          {/* SaaS Client Onboarding & Registration Wizard */}
+          <ClientRegistrationModal
+            isOpen={isClientRegistrationOpen}
+            plans={subscriptionPlans}
+            onClose={() => setIsClientRegistrationOpen(false)}
+            onCompleteRegistration={handleRegisterClient}
           />
 
           {/* Print / PDF Document Modal */}

@@ -20,8 +20,11 @@ import {
   UserStatus,
   UserRole,
   NotificationCategory,
+  PaymentRecord,
+  PaymentMethod,
 } from '../types';
 import {
+  INITIAL_COMPANIES,
   INITIAL_COMPANY,
   INITIAL_TRUCKS,
   INITIAL_DRIVERS,
@@ -38,26 +41,30 @@ import {
   INITIAL_USERS,
   INITIAL_SUBSCRIPTIONS,
   INITIAL_SUBSCRIPTION_PLANS,
+  INITIAL_PAYMENTS,
 } from './mockData';
 
 const STORAGE_KEYS = {
-  COMPANY: 'truckbook_company_v2',
-  TRUCKS: 'truckbook_trucks_v2',
-  DRIVERS: 'truckbook_drivers_v2',
-  CUSTOMERS: 'truckbook_customers_v2',
-  TRIPS: 'truckbook_trips_v2',
-  EXPENSES: 'truckbook_expenses_v2',
-  TRANSACTIONS: 'truckbook_transactions_v2',
-  NOTIFICATIONS: 'truckbook_notifications_v2',
-  SUPPLIERS: 'truckbook_suppliers_v2',
-  SUPPLIER_TX: 'truckbook_supplier_tx_v2',
-  FUEL_ENTRIES: 'truckbook_fuel_entries_v2',
-  MAINTENANCE: 'truckbook_maintenance_v2',
-  SALARY_SETTLEMENTS: 'truckbook_salary_settlements_v2',
-  USERS: 'truckbook_users_v2',
-  SUBSCRIPTIONS: 'truckbook_subscriptions_v2',
-  SUBSCRIPTION_PLANS: 'truckbook_sub_plans_v2',
-  CURRENT_USER_ID: 'truckbook_current_user_id_v2',
+  COMPANIES: 'truckbook_companies_saas_v3',
+  COMPANY: 'truckbook_company_saas_v3',
+  TRUCKS: 'truckbook_trucks_saas_v3',
+  DRIVERS: 'truckbook_drivers_saas_v3',
+  CUSTOMERS: 'truckbook_customers_saas_v3',
+  TRIPS: 'truckbook_trips_saas_v3',
+  EXPENSES: 'truckbook_expenses_saas_v3',
+  TRANSACTIONS: 'truckbook_transactions_saas_v3',
+  NOTIFICATIONS: 'truckbook_notifications_saas_v3',
+  SUPPLIERS: 'truckbook_suppliers_saas_v3',
+  SUPPLIER_TX: 'truckbook_supplier_tx_saas_v3',
+  FUEL_ENTRIES: 'truckbook_fuel_entries_saas_v3',
+  MAINTENANCE: 'truckbook_maintenance_saas_v3',
+  SALARY_SETTLEMENTS: 'truckbook_salary_settlements_saas_v3',
+  USERS: 'truckbook_users_saas_v3',
+  SUBSCRIPTIONS: 'truckbook_subscriptions_saas_v3',
+  SUBSCRIPTION_PLANS: 'truckbook_sub_plans_saas_v3',
+  PAYMENTS: 'truckbook_payments_saas_v3',
+  CURRENT_USER_ID: 'truckbook_current_user_id_saas_v3',
+  ACTIVE_TENANT_ID: 'truckbook_active_tenant_id_saas_v3',
 };
 
 class LocalDatabaseManager {
@@ -79,29 +86,240 @@ class LocalDatabaseManager {
     }
   }
 
-  // USERS & RBAC
-  getUsers(): User[] {
+  // ==========================================
+  // TENANT ISOLATION HELPERS
+  // ==========================================
+  getActiveTenantId(): string {
+    const user = this.getCurrentUser();
+    if (user && user.role !== 'Provider Admin' && user.tenantId) {
+      return user.tenantId;
+    }
+    const storedTenant = this.getStorage<string | null>(STORAGE_KEYS.ACTIVE_TENANT_ID, null);
+    if (storedTenant) return storedTenant;
+    if (user?.tenantId) return user.tenantId;
+    return 'comp_01';
+  }
+
+  setActiveTenantId(tenantId: string): void {
+    this.setStorage(STORAGE_KEYS.ACTIVE_TENANT_ID, tenantId);
+  }
+
+  // ==========================================
+  // MULTI-TENANT COMPANIES & ONBOARDING
+  // ==========================================
+  getCompanies(): Company[] {
+    return this.getStorage<Company[]>(STORAGE_KEYS.COMPANIES, INITIAL_COMPANIES);
+  }
+
+  getCompany(tenantId?: string): Company {
+    const targetTenantId = tenantId || this.getActiveTenantId();
+    const companies = this.getCompanies();
+    const found = companies.find((c) => c.id === targetTenantId);
+    if (found) return found;
+    return companies[0] || INITIAL_COMPANY;
+  }
+
+  saveCompany(company: Company): void {
+    const companies = this.getCompanies();
+    const index = companies.findIndex((c) => c.id === company.id);
+    if (index >= 0) {
+      companies[index] = { ...company, updatedAt: Date.now() };
+    } else {
+      companies.unshift({ ...company, createdAt: Date.now(), updatedAt: Date.now() });
+    }
+    this.setStorage(STORAGE_KEYS.COMPANIES, companies);
+    this.setStorage(STORAGE_KEYS.COMPANY, company);
+  }
+
+  updateCompany(company: Company): void {
+    this.saveCompany(company);
+  }
+
+  setCurrency(currency: Currency): void {
+    const comp = this.getCompany();
+    comp.currency = currency;
+    comp.updatedAt = Date.now();
+    this.saveCompany(comp);
+  }
+
+  // Complete SaaS Client Onboarding Flow
+  registerClient(payload: {
+    userName: string;
+    userEmail: string;
+    userPhone: string;
+    companyName: string;
+    planId: SubscriptionPlanId;
+    paymentMethod: PaymentMethod;
+    city?: string;
+    address?: string;
+  }): { user: User; company: Company; subscription: Subscription } {
+    const tenantId = `comp_${Date.now()}`;
+    const userId = `usr_${Date.now()}`;
+    const subId = `sub_${Date.now()}`;
+    const payId = `pay_${Date.now()}`;
+
+    const plans = this.getSubscriptionPlans();
+    const selectedPlan = plans.find((p) => p.id === payload.planId) || plans[0];
+
+    const startDate = new Date();
+    const expiryDate = new Date();
+    expiryDate.setMonth(expiryDate.getMonth() + selectedPlan.durationMonths);
+
+    // 1. Create Company
+    const newCompany: Company = {
+      id: tenantId,
+      name: payload.companyName,
+      phone: payload.userPhone,
+      email: payload.userEmail,
+      city: payload.city || 'Lahore',
+      address: payload.address || 'Truck Stand, Main Hub',
+      country: 'Pakistan',
+      currency: 'PKR',
+      status: 'Active',
+      ownerUserId: userId,
+      subscriptionId: subId,
+      onboardingStatus: 'completed',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.saveCompany(newCompany);
+
+    // 2. Create User (Company Admin)
+    const newUser: User = {
+      id: userId,
+      name: payload.userName,
+      email: payload.userEmail,
+      phone: payload.userPhone,
+      role: 'Company Admin',
+      status: 'Active',
+      tenantId: tenantId,
+      companyId: tenantId,
+      notes: `Company Admin and Owner of ${payload.companyName}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.saveUser(newUser);
+
+    // 3. Create Subscription
+    const newSubscription: Subscription = {
+      id: subId,
+      tenantId: tenantId,
+      companyId: tenantId,
+      userId: userId,
+      planId: selectedPlan.id,
+      planName: selectedPlan.name,
+      durationMonths: selectedPlan.durationMonths,
+      startDate: startDate.toISOString().split('T')[0],
+      expiryDate: expiryDate.toISOString().split('T')[0],
+      status: 'Active',
+      pricePaid: selectedPlan.price,
+      paymentMethod: payload.paymentMethod,
+      paymentStatus: 'Completed',
+      autoRenew: true,
+      maxUsers: selectedPlan.maxUsers,
+      maxDrivers: selectedPlan.maxDrivers,
+      maxTrucks: selectedPlan.maxTrucks,
+      notes: `Initial onboarding subscription for ${selectedPlan.name}`,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.saveSubscription(newSubscription);
+
+    // 4. Create Payment Record
+    const newPayment: PaymentRecord = {
+      id: payId,
+      tenantId: tenantId,
+      subscriptionId: subId,
+      userId: userId,
+      amount: selectedPlan.price,
+      currency: 'PKR',
+      paymentMethod: payload.paymentMethod,
+      status: 'Success',
+      transactionRef: `ONBOARD-${Date.now().toString().slice(-6)}`,
+      planName: selectedPlan.name,
+      billingCycle: `${selectedPlan.durationMonths} Month(s)`,
+      createdAt: Date.now(),
+    };
+    this.addPayment(newPayment);
+
+    // 5. Welcome Notification
+    this.addNotification({
+      id: `notif_welcome_${Date.now()}`,
+      tenantId: tenantId,
+      userId: userId,
+      title: 'Welcome to TruckBook SaaS!',
+      message: `Your transport company "${payload.companyName}" is live with the ${selectedPlan.name}. Add your trucks & drivers to get rolling!`,
+      category: 'subscription',
+      type: 'system',
+      severity: 'success',
+      targetRole: 'Admin',
+      date: newSubscription.startDate,
+      isRead: false,
+      createdAt: Date.now(),
+    });
+
+    // Automatically log in as new user & switch tenant
+    this.setCurrentUserId(userId);
+    this.setActiveTenantId(tenantId);
+
+    return { user: newUser, company: newCompany, subscription: newSubscription };
+  }
+
+  // ==========================================
+  // USERS & RBAC (TENANT ISOLATED)
+  // ==========================================
+  getUsers(tenantId?: string): User[] {
+    const allUsers = this.getStorage<User[]>(STORAGE_KEYS.USERS, INITIAL_USERS);
+    const currentUser = this.getCurrentUserRaw();
+    
+    // If Provider Admin and no specific tenant requested, can view all
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allUsers;
+    }
+
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allUsers.filter((u) => {
+      if (u.role === 'Provider Admin') return true;
+      const userTenant = u.tenantId || u.companyId || 'comp_01';
+      return userTenant === targetTenant;
+    });
+  }
+
+  getAllUsers(): User[] {
     return this.getStorage<User[]>(STORAGE_KEYS.USERS, INITIAL_USERS);
   }
 
   getUserById(id: string): User | undefined {
-    return this.getUsers().find((u) => u.id === id);
+    return this.getAllUsers().find((u) => u.id === id);
+  }
+
+  private getCurrentUserRaw(): User | undefined {
+    const currentId = this.getStorage<string>(STORAGE_KEYS.CURRENT_USER_ID, 'usr_admin');
+    return this.getAllUsers().find((u) => u.id === currentId);
   }
 
   saveUser(user: User): void {
-    const users = this.getUsers();
+    const users = this.getAllUsers();
     const index = users.findIndex((u) => u.id === user.id);
-    if (index >= 0) {
-      users[index] = { ...user, updatedAt: Date.now() };
-    } else {
-      users.unshift({ ...user, createdAt: Date.now(), updatedAt: Date.now() });
+    const tenantId = user.tenantId || user.companyId || this.getActiveTenantId();
+    const userToSave: User = {
+      ...user,
+      tenantId,
+      companyId: tenantId,
+    };
 
-      // Notify admin if new pending user
+    if (index >= 0) {
+      users[index] = { ...userToSave, updatedAt: Date.now() };
+    } else {
+      users.unshift({ ...userToSave, createdAt: Date.now(), updatedAt: Date.now() });
+
+      // Notify tenant admins if new pending user
       if (user.status === 'Pending Approval') {
         this.addNotification({
           id: `notif_reg_${Date.now()}`,
-          title: 'New Registration Request',
-          message: `${user.name} (${user.role}) has requested access. Review in User Management.`,
+          tenantId: tenantId,
+          title: 'New User Registration Request',
+          message: `${user.name} (${user.role}) requested access to your company fleet. Review in Users & Roles.`,
           category: 'user',
           type: 'registration',
           severity: 'warning',
@@ -124,12 +342,12 @@ class LocalDatabaseManager {
     user.updatedAt = Date.now();
     this.saveUser(user);
 
-    // Notify user
     this.addNotification({
       id: `notif_appr_${Date.now()}`,
+      tenantId: user.tenantId,
       userId: user.id,
       title: 'Account Approved!',
-      message: `Your TruckBook account has been approved${approvedBy ? ` by ${approvedBy}` : ''}. Welcome aboard!`,
+      message: `Your TruckBook account has been approved${approvedBy ? ` by ${approvedBy}` : ''}. You have full operational access.`,
       category: 'user',
       type: 'approval',
       severity: 'success',
@@ -150,6 +368,7 @@ class LocalDatabaseManager {
 
     this.addNotification({
       id: `notif_rej_${Date.now()}`,
+      tenantId: user.tenantId,
       userId: user.id,
       title: 'Registration Rejected',
       message: reason ? `Your account request was declined: ${reason}` : `Your account request was declined by the administrator.`,
@@ -171,7 +390,7 @@ class LocalDatabaseManager {
   }
 
   deleteUser(userId: string): void {
-    const users = this.getUsers().filter((u) => u.id !== userId);
+    const users = this.getAllUsers().filter((u) => u.id !== userId);
     this.setStorage(STORAGE_KEYS.USERS, users);
   }
 
@@ -179,33 +398,61 @@ class LocalDatabaseManager {
     const currentId = this.getStorage<string>(STORAGE_KEYS.CURRENT_USER_ID, 'usr_admin');
     const user = this.getUserById(currentId);
     if (user) return user;
-    const users = this.getUsers();
+    const users = this.getAllUsers();
     return users[0] || INITIAL_USERS[0];
   }
 
   setCurrentUserId(userId: string): void {
     this.setStorage(STORAGE_KEYS.CURRENT_USER_ID, userId);
+    const user = this.getUserById(userId);
+    if (user?.tenantId) {
+      this.setActiveTenantId(user.tenantId);
+    }
   }
 
-  // SUBSCRIPTIONS & PLANS
+  // ==========================================
+  // SUBSCRIPTION & PLAN QUOTAS (SAAS)
+  // ==========================================
   getSubscriptionPlans(): SubscriptionPlan[] {
     return this.getStorage<SubscriptionPlan[]>(STORAGE_KEYS.SUBSCRIPTION_PLANS, INITIAL_SUBSCRIPTION_PLANS);
   }
 
-  updateSubscriptionPlanPrice(planId: SubscriptionPlanId, newPrice: number): void {
-    const plans = this.getSubscriptionPlans().map((p) => (p.id === planId ? { ...p, price: newPrice } : p));
+  saveSubscriptionPlan(plan: SubscriptionPlan): void {
+    const plans = this.getSubscriptionPlans();
+    const index = plans.findIndex((p) => p.id === plan.id);
+    if (index >= 0) {
+      plans[index] = { ...plan, updatedAt: Date.now() };
+    } else {
+      plans.push({ ...plan, createdAt: Date.now(), updatedAt: Date.now() });
+    }
     this.setStorage(STORAGE_KEYS.SUBSCRIPTION_PLANS, plans);
   }
 
-  getSubscriptions(): Subscription[] {
+  updateSubscriptionPlanPrice(planId: SubscriptionPlanId, newPrice: number): void {
+    const plans = this.getSubscriptionPlans().map((p) => (p.id === planId ? { ...p, price: newPrice, updatedAt: Date.now() } : p));
+    this.setStorage(STORAGE_KEYS.SUBSCRIPTION_PLANS, plans);
+  }
+
+  getSubscriptions(tenantId?: string): Subscription[] {
+    const allSubs = this.getStorage<Subscription[]>(STORAGE_KEYS.SUBSCRIPTIONS, INITIAL_SUBSCRIPTIONS);
+    const currentUser = this.getCurrentUserRaw();
+
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allSubs;
+    }
+
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allSubs.filter((s) => (s.tenantId || s.companyId || 'comp_01') === targetTenant);
+  }
+
+  getAllSubscriptions(): Subscription[] {
     return this.getStorage<Subscription[]>(STORAGE_KEYS.SUBSCRIPTIONS, INITIAL_SUBSCRIPTIONS);
   }
 
-  getActiveSubscription(): Subscription | undefined {
-    const subs = this.getSubscriptions();
+  getActiveSubscription(tenantId?: string): Subscription | undefined {
+    const subs = this.getSubscriptions(tenantId);
     const active = subs.find((s) => s.status === 'Active' || s.status === 'Expiring Soon');
     if (active) {
-      // Calculate days remaining and update status if expired or expiring soon
       const expTime = new Date(active.expiryDate).getTime();
       const now = Date.now();
       const daysLeft = Math.ceil((expTime - now) / 86400000);
@@ -221,12 +468,15 @@ class LocalDatabaseManager {
   }
 
   saveSubscription(sub: Subscription): void {
-    const subs = this.getSubscriptions();
+    const subs = this.getAllSubscriptions();
     const index = subs.findIndex((s) => s.id === sub.id);
+    const tenantId = sub.tenantId || sub.companyId || this.getActiveTenantId();
+    const subToSave = { ...sub, tenantId, companyId: tenantId };
+
     if (index >= 0) {
-      subs[index] = sub;
+      subs[index] = subToSave;
     } else {
-      subs.unshift(sub);
+      subs.unshift(subToSave);
     }
     this.setStorage(STORAGE_KEYS.SUBSCRIPTIONS, subs);
   }
@@ -235,19 +485,21 @@ class LocalDatabaseManager {
     planId: SubscriptionPlanId,
     durationMonths: number,
     pricePaid?: number,
-    paymentMethod: any = 'Bank Transfer',
+    paymentMethod: PaymentMethod = 'Bank Transfer',
     userId?: string,
-    companyId = 'comp_01'
+    tenantId?: string
   ): Subscription {
+    const targetTenant = tenantId || this.getActiveTenantId();
     const plans = this.getSubscriptionPlans();
     const plan = plans.find((p) => p.id === planId) || plans[0];
     const startDate = new Date();
     const expiryDate = new Date();
     expiryDate.setMonth(expiryDate.getMonth() + durationMonths);
 
-    // Deactivate previous active subscriptions
-    const subs = this.getSubscriptions().map((s) => {
-      if (s.status === 'Active' || s.status === 'Expiring Soon') {
+    // Deactivate previous active subscriptions for this tenant
+    const allSubs = this.getAllSubscriptions().map((s) => {
+      const sTenant = s.tenantId || s.companyId || 'comp_01';
+      if (sTenant === targetTenant && (s.status === 'Active' || s.status === 'Expiring Soon')) {
         return { ...s, status: 'Expired' as const };
       }
       return s;
@@ -255,8 +507,9 @@ class LocalDatabaseManager {
 
     const newSub: Subscription = {
       id: `sub_${Date.now()}`,
-      companyId,
-      userId,
+      tenantId: targetTenant,
+      companyId: targetTenant,
+      userId: userId || this.getCurrentUser().id,
       planId,
       planName: plan.name,
       durationMonths,
@@ -265,24 +518,45 @@ class LocalDatabaseManager {
       status: 'Active',
       pricePaid: pricePaid ?? plan.price,
       paymentMethod,
+      paymentStatus: 'Completed',
       autoRenew: true,
+      maxUsers: plan.maxUsers,
+      maxDrivers: plan.maxDrivers,
+      maxTrucks: plan.maxTrucks,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
 
-    subs.unshift(newSub);
-    this.setStorage(STORAGE_KEYS.SUBSCRIPTIONS, subs);
+    allSubs.unshift(newSub);
+    this.setStorage(STORAGE_KEYS.SUBSCRIPTIONS, allSubs);
+
+    // Record payment
+    this.addPayment({
+      id: `pay_${Date.now()}`,
+      tenantId: targetTenant,
+      subscriptionId: newSub.id,
+      userId: newSub.userId || '',
+      amount: newSub.pricePaid || plan.price,
+      currency: 'PKR',
+      paymentMethod,
+      status: 'Success',
+      transactionRef: `SUB-${Date.now().toString().slice(-6)}`,
+      planName: plan.name,
+      billingCycle: `${durationMonths} Month(s)`,
+      createdAt: Date.now(),
+    });
 
     // Update company subscription ID
-    const comp = this.getCompany();
+    const comp = this.getCompany(targetTenant);
     comp.subscriptionId = newSub.id;
-    this.updateCompany(comp);
+    this.saveCompany(comp);
 
     // Send notification
     this.addNotification({
       id: `notif_sub_${Date.now()}`,
-      title: 'Subscription Activated!',
-      message: `${plan.name} (${durationMonths} Months) has been successfully activated. Valid until ${newSub.expiryDate}.`,
+      tenantId: targetTenant,
+      title: 'Subscription Plan Activated!',
+      message: `${plan.name} (${durationMonths} Months) is now active. Quotas: ${plan.maxUsers} Users, ${plan.maxDrivers} Drivers, ${plan.maxTrucks} Trucks.`,
       category: 'subscription',
       type: 'subscription',
       severity: 'success',
@@ -295,8 +569,8 @@ class LocalDatabaseManager {
     return newSub;
   }
 
-  renewSubscription(subId: string, durationMonths = 6): void {
-    const sub = this.getSubscriptions().find((s) => s.id === subId);
+  renewSubscription(subId: string, durationMonths = 6, paymentMethod: PaymentMethod = 'Bank Transfer'): void {
+    const sub = this.getAllSubscriptions().find((s) => s.id === subId);
     if (!sub) return;
     const currExp = new Date(sub.expiryDate);
     const baseDate = currExp.getTime() > Date.now() ? currExp : new Date();
@@ -304,12 +578,30 @@ class LocalDatabaseManager {
 
     sub.expiryDate = baseDate.toISOString().split('T')[0];
     sub.status = 'Active';
+    sub.updatedAt = Date.now();
     this.saveSubscription(sub);
+
+    // Record payment
+    this.addPayment({
+      id: `pay_renew_${Date.now()}`,
+      tenantId: sub.tenantId || 'comp_01',
+      subscriptionId: sub.id,
+      userId: sub.userId || this.getCurrentUser().id,
+      amount: sub.pricePaid || 24000,
+      currency: 'PKR',
+      paymentMethod,
+      status: 'Success',
+      transactionRef: `RENEW-${Date.now().toString().slice(-6)}`,
+      planName: sub.planName,
+      billingCycle: `${durationMonths} Month(s)`,
+      createdAt: Date.now(),
+    });
 
     this.addNotification({
       id: `notif_renew_${Date.now()}`,
-      title: 'Subscription Renewed',
-      message: `Your fleet subscription has been extended until ${sub.expiryDate}.`,
+      tenantId: sub.tenantId,
+      title: 'Subscription Successfully Renewed',
+      message: `Your fleet subscription for ${sub.planName} has been extended until ${sub.expiryDate}.`,
       category: 'subscription',
       type: 'subscription',
       severity: 'success',
@@ -321,13 +613,15 @@ class LocalDatabaseManager {
   }
 
   cancelSubscription(subId: string): void {
-    const sub = this.getSubscriptions().find((s) => s.id === subId);
+    const sub = this.getAllSubscriptions().find((s) => s.id === subId);
     if (!sub) return;
     sub.status = 'Suspended';
+    sub.updatedAt = Date.now();
     this.saveSubscription(sub);
 
     this.addNotification({
       id: `notif_canc_${Date.now()}`,
+      tenantId: sub.tenantId,
       title: 'Subscription Suspended',
       message: `Fleet subscription #${sub.id} was suspended.`,
       category: 'subscription',
@@ -340,138 +634,291 @@ class LocalDatabaseManager {
     });
   }
 
-  // COMPANY
-  getCompany(): Company {
-    return this.getStorage<Company>(STORAGE_KEYS.COMPANY, INITIAL_COMPANY);
+  // Check Subscription Limits
+  canAddUser(tenantId?: string): { allowed: boolean; current: number; max: number; message?: string } {
+    const targetTenant = tenantId || this.getActiveTenantId();
+    const sub = this.getActiveSubscription(targetTenant);
+    const users = this.getUsers(targetTenant);
+    const current = users.length;
+    const max = sub?.maxUsers || 5;
+
+    if (current >= max) {
+      return {
+        allowed: false,
+        current,
+        max,
+        message: `User limit reached (${current}/${max}). Please upgrade your plan to add more team members.`,
+      };
+    }
+    return { allowed: true, current, max };
   }
 
-  updateCompany(company: Company): void {
-    this.setStorage(STORAGE_KEYS.COMPANY, company);
+  canAddDriver(tenantId?: string): { allowed: boolean; current: number; max: number; message?: string } {
+    const targetTenant = tenantId || this.getActiveTenantId();
+    const sub = this.getActiveSubscription(targetTenant);
+    const drivers = this.getDrivers(targetTenant);
+    const current = drivers.length;
+    const max = sub?.maxDrivers || 20;
+
+    if (current >= max) {
+      return {
+        allowed: false,
+        current,
+        max,
+        message: `Driver limit reached (${current}/${max}). Upgrade your subscription to register additional drivers.`,
+      };
+    }
+    return { allowed: true, current, max };
   }
 
-  setCurrency(currency: Currency): void {
-    const comp = this.getCompany();
-    comp.currency = currency;
-    comp.updatedAt = Date.now();
-    this.updateCompany(comp);
+  canAddTruck(tenantId?: string): { allowed: boolean; current: number; max: number; message?: string } {
+    const targetTenant = tenantId || this.getActiveTenantId();
+    const sub = this.getActiveSubscription(targetTenant);
+    const trucks = this.getTrucks(targetTenant);
+    const current = trucks.length;
+    const max = sub?.maxTrucks || 20;
+
+    if (current >= max) {
+      return {
+        allowed: false,
+        current,
+        max,
+        message: `Truck vehicle limit reached (${current}/${max}). Upgrade your plan to manage more fleet vehicles.`,
+      };
+    }
+    return { allowed: true, current, max };
   }
 
-  // TRUCKS
-  getTrucks(): Truck[] {
+  // ==========================================
+  // PAYMENTS & BILLING HISTORY (SAAS)
+  // ==========================================
+  getPayments(tenantId?: string): PaymentRecord[] {
+    const allPayments = this.getStorage<PaymentRecord[]>(STORAGE_KEYS.PAYMENTS, INITIAL_PAYMENTS);
+    const currentUser = this.getCurrentUserRaw();
+
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allPayments;
+    }
+
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allPayments.filter((p) => (p.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllPayments(): PaymentRecord[] {
+    return this.getStorage<PaymentRecord[]>(STORAGE_KEYS.PAYMENTS, INITIAL_PAYMENTS);
+  }
+
+  addPayment(payment: PaymentRecord): void {
+    const allPayments = this.getAllPayments();
+    allPayments.unshift(payment);
+    this.setStorage(STORAGE_KEYS.PAYMENTS, allPayments);
+  }
+
+  // ==========================================
+  // TRUCKS (TENANT ISOLATED)
+  // ==========================================
+  getTrucks(tenantId?: string): Truck[] {
+    const allTrucks = this.getStorage<Truck[]>(STORAGE_KEYS.TRUCKS, INITIAL_TRUCKS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allTrucks;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allTrucks.filter((t) => (t.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllTrucks(): Truck[] {
     return this.getStorage<Truck[]>(STORAGE_KEYS.TRUCKS, INITIAL_TRUCKS);
   }
 
   saveTruck(truck: Truck): void {
-    const trucks = this.getTrucks();
+    const trucks = this.getAllTrucks();
+    const tenantId = truck.tenantId || this.getActiveTenantId();
+    const truckToSave = { ...truck, tenantId };
     const index = trucks.findIndex((t) => t.id === truck.id);
+
     if (index >= 0) {
-      trucks[index] = { ...truck, updatedAt: Date.now() };
+      trucks[index] = { ...truckToSave, updatedAt: Date.now() };
     } else {
-      trucks.unshift({ ...truck, createdAt: Date.now(), updatedAt: Date.now() });
+      trucks.unshift({ ...truckToSave, createdAt: Date.now(), updatedAt: Date.now() });
     }
     this.setStorage(STORAGE_KEYS.TRUCKS, trucks);
   }
 
   deleteTruck(truckId: string): void {
-    const trucks = this.getTrucks().filter((t) => t.id !== truckId);
+    const trucks = this.getAllTrucks().filter((t) => t.id !== truckId);
     this.setStorage(STORAGE_KEYS.TRUCKS, trucks);
   }
 
-  // DRIVERS
-  getDrivers(): Driver[] {
+  // ==========================================
+  // DRIVERS (TENANT ISOLATED)
+  // ==========================================
+  getDrivers(tenantId?: string): Driver[] {
+    const allDrivers = this.getStorage<Driver[]>(STORAGE_KEYS.DRIVERS, INITIAL_DRIVERS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allDrivers;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allDrivers.filter((d) => (d.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllDrivers(): Driver[] {
     return this.getStorage<Driver[]>(STORAGE_KEYS.DRIVERS, INITIAL_DRIVERS);
   }
 
   saveDriver(driver: Driver): void {
-    const drivers = this.getDrivers();
+    const drivers = this.getAllDrivers();
+    const tenantId = driver.tenantId || this.getActiveTenantId();
+    const driverToSave = { ...driver, tenantId };
     const index = drivers.findIndex((d) => d.id === driver.id);
+
     if (index >= 0) {
-      drivers[index] = { ...driver, updatedAt: Date.now() };
+      drivers[index] = { ...driverToSave, updatedAt: Date.now() };
     } else {
-      drivers.unshift({ ...driver, createdAt: Date.now(), updatedAt: Date.now() });
+      drivers.unshift({ ...driverToSave, createdAt: Date.now(), updatedAt: Date.now() });
     }
     this.setStorage(STORAGE_KEYS.DRIVERS, drivers);
   }
 
   deleteDriver(driverId: string): void {
-    const drivers = this.getDrivers().filter((d) => d.id !== driverId);
+    const drivers = this.getAllDrivers().filter((d) => d.id !== driverId);
     this.setStorage(STORAGE_KEYS.DRIVERS, drivers);
   }
 
-  // CUSTOMERS
-  getCustomers(): Customer[] {
+  // ==========================================
+  // CUSTOMERS (TENANT ISOLATED)
+  // ==========================================
+  getCustomers(tenantId?: string): Customer[] {
+    const allCustomers = this.getStorage<Customer[]>(STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allCustomers;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allCustomers.filter((c) => (c.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllCustomers(): Customer[] {
     return this.getStorage<Customer[]>(STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS);
   }
 
   saveCustomer(customer: Customer): void {
-    const customers = this.getCustomers();
+    const customers = this.getAllCustomers();
+    const tenantId = customer.tenantId || this.getActiveTenantId();
+    const customerToSave = { ...customer, tenantId };
     const index = customers.findIndex((c) => c.id === customer.id);
+
     if (index >= 0) {
-      customers[index] = { ...customer, updatedAt: Date.now() };
+      customers[index] = { ...customerToSave, updatedAt: Date.now() };
     } else {
-      customers.unshift({ ...customer, createdAt: Date.now(), updatedAt: Date.now() });
+      customers.unshift({ ...customerToSave, createdAt: Date.now(), updatedAt: Date.now() });
     }
     this.setStorage(STORAGE_KEYS.CUSTOMERS, customers);
   }
 
   deleteCustomer(customerId: string): void {
-    const customers = this.getCustomers().filter((c) => c.id !== customerId);
+    const customers = this.getAllCustomers().filter((c) => c.id !== customerId);
     this.setStorage(STORAGE_KEYS.CUSTOMERS, customers);
   }
 
-  // SUPPLIERS
-  getSuppliers(): Supplier[] {
+  // ==========================================
+  // SUPPLIERS (TENANT ISOLATED)
+  // ==========================================
+  getSuppliers(tenantId?: string): Supplier[] {
+    const allSuppliers = this.getStorage<Supplier[]>(STORAGE_KEYS.SUPPLIERS, INITIAL_SUPPLIERS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allSuppliers;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allSuppliers.filter((s) => (s.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllSuppliers(): Supplier[] {
     return this.getStorage<Supplier[]>(STORAGE_KEYS.SUPPLIERS, INITIAL_SUPPLIERS);
   }
 
   saveSupplier(supplier: Supplier): void {
-    const suppliers = this.getSuppliers();
+    const suppliers = this.getAllSuppliers();
+    const tenantId = supplier.tenantId || this.getActiveTenantId();
+    const supplierToSave = { ...supplier, tenantId };
     const index = suppliers.findIndex((s) => s.id === supplier.id);
+
     if (index >= 0) {
-      suppliers[index] = { ...supplier, updatedAt: Date.now() };
+      suppliers[index] = { ...supplierToSave, updatedAt: Date.now() };
     } else {
-      suppliers.unshift({ ...supplier, createdAt: Date.now(), updatedAt: Date.now() });
+      suppliers.unshift({ ...supplierToSave, createdAt: Date.now(), updatedAt: Date.now() });
     }
     this.setStorage(STORAGE_KEYS.SUPPLIERS, suppliers);
   }
 
   deleteSupplier(supplierId: string): void {
-    const suppliers = this.getSuppliers().filter((s) => s.id !== supplierId);
+    const suppliers = this.getAllSuppliers().filter((s) => s.id !== supplierId);
     this.setStorage(STORAGE_KEYS.SUPPLIERS, suppliers);
   }
 
-  // SUPPLIER TRANSACTIONS
-  getSupplierTransactions(): SupplierTransaction[] {
+  // ==========================================
+  // SUPPLIER TRANSACTIONS (TENANT ISOLATED)
+  // ==========================================
+  getSupplierTransactions(tenantId?: string): SupplierTransaction[] {
+    const all = this.getStorage<SupplierTransaction[]>(STORAGE_KEYS.SUPPLIER_TX, INITIAL_SUPPLIER_TRANSACTIONS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((t) => (t.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllSupplierTransactions(): SupplierTransaction[] {
     return this.getStorage<SupplierTransaction[]>(STORAGE_KEYS.SUPPLIER_TX, INITIAL_SUPPLIER_TRANSACTIONS);
   }
 
   addSupplierTransaction(tx: SupplierTransaction): void {
-    const txs = this.getSupplierTransactions();
-    txs.unshift(tx);
+    const txs = this.getAllSupplierTransactions();
+    const tenantId = tx.tenantId || this.getActiveTenantId();
+    txs.unshift({ ...tx, tenantId });
     this.setStorage(STORAGE_KEYS.SUPPLIER_TX, txs);
   }
 
   deleteSupplierTransaction(id: string): void {
-    const txs = this.getSupplierTransactions().filter((t) => t.id !== id);
+    const txs = this.getAllSupplierTransactions().filter((t) => t.id !== id);
     this.setStorage(STORAGE_KEYS.SUPPLIER_TX, txs);
   }
 
-  // FUEL ENTRIES
-  getFuelEntries(): FuelEntry[] {
+  // ==========================================
+  // FUEL ENTRIES (TENANT ISOLATED)
+  // ==========================================
+  getFuelEntries(tenantId?: string): FuelEntry[] {
+    const all = this.getStorage<FuelEntry[]>(STORAGE_KEYS.FUEL_ENTRIES, INITIAL_FUEL_ENTRIES);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((e) => (e.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllFuelEntries(): FuelEntry[] {
     return this.getStorage<FuelEntry[]>(STORAGE_KEYS.FUEL_ENTRIES, INITIAL_FUEL_ENTRIES);
   }
 
   saveFuelEntry(entry: FuelEntry): void {
-    const entries = this.getFuelEntries();
+    const entries = this.getAllFuelEntries();
+    const tenantId = entry.tenantId || this.getActiveTenantId();
+    const entryToSave = { ...entry, tenantId };
     const index = entries.findIndex((e) => e.id === entry.id);
-    if (index >= 0) {
-      entries[index] = entry;
-    } else {
-      entries.unshift(entry);
 
-      // Also create an associated expense record
+    if (index >= 0) {
+      entries[index] = entryToSave;
+    } else {
+      entries.unshift(entryToSave);
+
+      // Create linked expense record
       this.saveExpense({
         id: `exp_fuel_${entry.id}`,
+        tenantId: tenantId,
         truckId: entry.truckId,
         tripId: entry.tripId,
         driverId: entry.driverId,
@@ -485,10 +932,10 @@ class LocalDatabaseManager {
         updatedAt: Date.now(),
       });
 
-      // If supplier is linked, create a supplier bill transaction
       if (entry.supplierId) {
         this.addSupplierTransaction({
           id: `stx_fuel_${Date.now()}`,
+          tenantId: tenantId,
           supplierId: entry.supplierId,
           truckId: entry.truckId,
           tripId: entry.tripId,
@@ -501,8 +948,8 @@ class LocalDatabaseManager {
         });
       }
 
-      // Update truck current mileage if new odometer reading is higher
-      const trucks = this.getTrucks();
+      // Update truck odometer
+      const trucks = this.getAllTrucks();
       const trk = trucks.find((t) => t.id === entry.truckId);
       if (trk && entry.odometerReading > trk.currentMileage) {
         trk.currentMileage = entry.odometerReading;
@@ -514,26 +961,41 @@ class LocalDatabaseManager {
   }
 
   deleteFuelEntry(entryId: string): void {
-    const entries = this.getFuelEntries().filter((e) => e.id !== entryId);
+    const entries = this.getAllFuelEntries().filter((e) => e.id !== entryId);
     this.setStorage(STORAGE_KEYS.FUEL_ENTRIES, entries);
   }
 
-  // MAINTENANCE
-  getMaintenanceRecords(): MaintenanceRecord[] {
+  // ==========================================
+  // MAINTENANCE RECORDS (TENANT ISOLATED)
+  // ==========================================
+  getMaintenanceRecords(tenantId?: string): MaintenanceRecord[] {
+    const all = this.getStorage<MaintenanceRecord[]>(STORAGE_KEYS.MAINTENANCE, INITIAL_MAINTENANCE_RECORDS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((m) => (m.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllMaintenanceRecords(): MaintenanceRecord[] {
     return this.getStorage<MaintenanceRecord[]>(STORAGE_KEYS.MAINTENANCE, INITIAL_MAINTENANCE_RECORDS);
   }
 
   saveMaintenanceRecord(record: MaintenanceRecord): void {
-    const list = this.getMaintenanceRecords();
+    const list = this.getAllMaintenanceRecords();
+    const tenantId = record.tenantId || this.getActiveTenantId();
+    const recordToSave = { ...record, tenantId };
     const index = list.findIndex((m) => m.id === record.id);
-    if (index >= 0) {
-      list[index] = record;
-    } else {
-      list.unshift(record);
 
-      // Create an expense record for this maintenance
+    if (index >= 0) {
+      list[index] = recordToSave;
+    } else {
+      list.unshift(recordToSave);
+
       this.saveExpense({
         id: `exp_maint_${record.id}`,
+        tenantId: tenantId,
         truckId: record.truckId,
         category: 'Maintenance',
         amount: record.cost,
@@ -545,10 +1007,10 @@ class LocalDatabaseManager {
         updatedAt: Date.now(),
       });
 
-      // If supplier workshop is linked, create supplier bill
       if (record.supplierId) {
         this.addSupplierTransaction({
           id: `stx_maint_${Date.now()}`,
+          tenantId: tenantId,
           supplierId: record.supplierId,
           truckId: record.truckId,
           type: 'Bill',
@@ -564,26 +1026,41 @@ class LocalDatabaseManager {
   }
 
   deleteMaintenanceRecord(id: string): void {
-    const list = this.getMaintenanceRecords().filter((m) => m.id !== id);
+    const list = this.getAllMaintenanceRecords().filter((m) => m.id !== id);
     this.setStorage(STORAGE_KEYS.MAINTENANCE, list);
   }
 
-  // SALARY SETTLEMENTS
-  getSalarySettlements(): DriverSalarySettlement[] {
+  // ==========================================
+  // SALARY SETTLEMENTS (TENANT ISOLATED)
+  // ==========================================
+  getSalarySettlements(tenantId?: string): DriverSalarySettlement[] {
+    const all = this.getStorage<DriverSalarySettlement[]>(STORAGE_KEYS.SALARY_SETTLEMENTS, INITIAL_SALARY_SETTLEMENTS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((s) => (s.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllSalarySettlements(): DriverSalarySettlement[] {
     return this.getStorage<DriverSalarySettlement[]>(STORAGE_KEYS.SALARY_SETTLEMENTS, INITIAL_SALARY_SETTLEMENTS);
   }
 
   saveSalarySettlement(settlement: DriverSalarySettlement): void {
-    const list = this.getSalarySettlements();
+    const list = this.getAllSalarySettlements();
+    const tenantId = settlement.tenantId || this.getActiveTenantId();
+    const setToSave = { ...settlement, tenantId };
     const index = list.findIndex((s) => s.id === settlement.id);
-    if (index >= 0) {
-      list[index] = settlement;
-    } else {
-      list.unshift(settlement);
 
-      // Create salary expense entry
+    if (index >= 0) {
+      list[index] = setToSave;
+    } else {
+      list.unshift(setToSave);
+
       this.saveExpense({
         id: `exp_sal_${settlement.id}`,
+        tenantId: tenantId,
         driverId: settlement.driverId,
         category: 'Driver Salary',
         amount: settlement.paidAmount,
@@ -598,25 +1075,40 @@ class LocalDatabaseManager {
     this.setStorage(STORAGE_KEYS.SALARY_SETTLEMENTS, list);
   }
 
-  // TRIPS
-  getTrips(): Trip[] {
+  // ==========================================
+  // TRIPS (TENANT ISOLATED)
+  // ==========================================
+  getTrips(tenantId?: string): Trip[] {
+    const allTrips = this.getStorage<Trip[]>(STORAGE_KEYS.TRIPS, INITIAL_TRIPS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allTrips;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allTrips.filter((t) => (t.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllTrips(): Trip[] {
     return this.getStorage<Trip[]>(STORAGE_KEYS.TRIPS, INITIAL_TRIPS);
   }
 
   saveTrip(trip: Trip): void {
-    const trips = this.getTrips();
+    const trips = this.getAllTrips();
+    const tenantId = trip.tenantId || this.getActiveTenantId();
+    const tripToSave = { ...trip, tenantId };
     const index = trips.findIndex((t) => t.id === trip.id);
-    if (index >= 0) {
-      trips[index] = { ...trip, updatedAt: Date.now() };
-    } else {
-      trips.unshift({ ...trip, createdAt: Date.now(), updatedAt: Date.now() });
 
-      // Auto create invoice transaction if customer exists
+    if (index >= 0) {
+      trips[index] = { ...tripToSave, updatedAt: Date.now() };
+    } else {
+      trips.unshift({ ...tripToSave, createdAt: Date.now(), updatedAt: Date.now() });
+
       if (trip.customerId) {
         const totalIncome =
           (trip.tripRate || 0) + (trip.loadingCharges || 0) + (trip.unloadingCharges || 0) + (trip.otherIncome || 0);
         this.addCustomerTransaction({
           id: `tx_${Date.now()}_inv`,
+          tenantId: tenantId,
           customerId: trip.customerId,
           tripId: trip.id,
           type: 'Trip Invoice',
@@ -629,6 +1121,7 @@ class LocalDatabaseManager {
         if (trip.advanceReceived && trip.advanceReceived > 0) {
           this.addCustomerTransaction({
             id: `tx_${Date.now()}_adv`,
+            tenantId: tenantId,
             customerId: trip.customerId,
             tripId: trip.id,
             type: 'Payment',
@@ -644,27 +1137,42 @@ class LocalDatabaseManager {
   }
 
   deleteTrip(tripId: string): void {
-    const trips = this.getTrips().filter((t) => t.id !== tripId);
+    const trips = this.getAllTrips().filter((t) => t.id !== tripId);
     this.setStorage(STORAGE_KEYS.TRIPS, trips);
   }
 
-  // EXPENSES
-  getExpenses(): Expense[] {
+  // ==========================================
+  // EXPENSES (TENANT ISOLATED)
+  // ==========================================
+  getExpenses(tenantId?: string): Expense[] {
+    const allExpenses = this.getStorage<Expense[]>(STORAGE_KEYS.EXPENSES, INITIAL_EXPENSES);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return allExpenses;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return allExpenses.filter((e) => (e.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllExpenses(): Expense[] {
     return this.getStorage<Expense[]>(STORAGE_KEYS.EXPENSES, INITIAL_EXPENSES);
   }
 
   saveExpense(expense: Expense): void {
-    const expenses = this.getExpenses();
+    const expenses = this.getAllExpenses();
+    const tenantId = expense.tenantId || this.getActiveTenantId();
+    const expToSave = { ...expense, tenantId };
     const index = expenses.findIndex((e) => e.id === expense.id);
-    if (index >= 0) {
-      expenses[index] = { ...expense, updatedAt: Date.now() };
-    } else {
-      expenses.unshift({ ...expense, createdAt: Date.now(), updatedAt: Date.now() });
 
-      // If pending expense added by driver, notify admin
+    if (index >= 0) {
+      expenses[index] = { ...expToSave, updatedAt: Date.now() };
+    } else {
+      expenses.unshift({ ...expToSave, createdAt: Date.now(), updatedAt: Date.now() });
+
       if (expense.status === 'Pending') {
         this.addNotification({
           id: `notif_exp_sub_${Date.now()}`,
+          tenantId: tenantId,
           title: 'Driver Expense Submitted',
           message: `A new ${expense.category} expense of Rs. ${expense.amount.toLocaleString()} was submitted for review.`,
           category: 'expense',
@@ -682,7 +1190,7 @@ class LocalDatabaseManager {
   }
 
   approveExpense(expenseId: string, approvedBy: string): void {
-    const expenses = this.getExpenses();
+    const expenses = this.getAllExpenses();
     const expense = expenses.find((e) => e.id === expenseId);
     if (!expense) return;
 
@@ -692,9 +1200,9 @@ class LocalDatabaseManager {
     expense.updatedAt = Date.now();
     this.saveExpense(expense);
 
-    // Notify driver
     this.addNotification({
       id: `notif_exp_appr_${Date.now()}`,
+      tenantId: expense.tenantId,
       userId: expense.userId,
       title: 'Expense Approved',
       message: `Your ${expense.category} expense of Rs. ${expense.amount.toLocaleString()} has been approved.`,
@@ -709,7 +1217,7 @@ class LocalDatabaseManager {
   }
 
   rejectExpense(expenseId: string, reason: string, rejectedBy: string): void {
-    const expenses = this.getExpenses();
+    const expenses = this.getAllExpenses();
     const expense = expenses.find((e) => e.id === expenseId);
     if (!expense) return;
 
@@ -718,9 +1226,9 @@ class LocalDatabaseManager {
     expense.updatedAt = Date.now();
     this.saveExpense(expense);
 
-    // Notify driver
     this.addNotification({
       id: `notif_exp_rej_${Date.now()}`,
+      tenantId: expense.tenantId,
       userId: expense.userId,
       title: 'Expense Rejected',
       message: `Your ${expense.category} expense of Rs. ${expense.amount.toLocaleString()} was rejected: ${reason}`,
@@ -735,23 +1243,56 @@ class LocalDatabaseManager {
   }
 
   deleteExpense(expenseId: string): void {
-    const expenses = this.getExpenses().filter((e) => e.id !== expenseId);
+    const expenses = this.getAllExpenses().filter((e) => e.id !== expenseId);
     this.setStorage(STORAGE_KEYS.EXPENSES, expenses);
   }
 
-  // TRANSACTIONS
-  getTransactions(): CustomerTransaction[] {
+  // ==========================================
+  // TRANSACTIONS (TENANT ISOLATED)
+  // ==========================================
+  getTransactions(tenantId?: string): CustomerTransaction[] {
+    const all = this.getStorage<CustomerTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
+    const currentUser = this.getCurrentUserRaw();
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((t) => (t.tenantId || 'comp_01') === targetTenant);
+  }
+
+  getAllTransactions(): CustomerTransaction[] {
     return this.getStorage<CustomerTransaction[]>(STORAGE_KEYS.TRANSACTIONS, INITIAL_TRANSACTIONS);
   }
 
   addCustomerTransaction(tx: CustomerTransaction): void {
-    const txs = this.getTransactions();
-    txs.unshift(tx);
+    const txs = this.getAllTransactions();
+    const tenantId = tx.tenantId || this.getActiveTenantId();
+    txs.unshift({ ...tx, tenantId });
     this.setStorage(STORAGE_KEYS.TRANSACTIONS, txs);
   }
 
-  // NOTIFICATIONS
-  getNotifications(): AppNotification[] {
+  // ==========================================
+  // NOTIFICATIONS (TENANT & USER AWARE)
+  // ==========================================
+  getNotifications(tenantId?: string): AppNotification[] {
+    const all = this.getStorage<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS);
+    const currentUser = this.getCurrentUserRaw();
+
+    if (currentUser?.role === 'Provider Admin' && !tenantId) {
+      return all;
+    }
+
+    const targetTenant = tenantId || this.getActiveTenantId();
+    return all.filter((n) => {
+      // If notification has a specific userId target
+      if (n.userId && currentUser && n.userId === currentUser.id) return true;
+      // Filter by tenant
+      const notifTenant = n.tenantId || 'comp_01';
+      return notifTenant === targetTenant;
+    });
+  }
+
+  getAllNotifications(): AppNotification[] {
     return this.getStorage<AppNotification[]>(STORAGE_KEYS.NOTIFICATIONS, INITIAL_NOTIFICATIONS);
   }
 
@@ -762,9 +1303,11 @@ class LocalDatabaseManager {
       category: NotificationCategory;
     }
   ): AppNotification {
-    const list = this.getNotifications();
+    const list = this.getAllNotifications();
+    const tenantId = notification.tenantId || this.getActiveTenantId();
     const fullNotification: AppNotification = {
       id: notification.id || `notif_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      tenantId: tenantId,
       userId: notification.userId,
       targetRole: notification.targetRole || 'all',
       title: notification.title,
@@ -784,21 +1327,27 @@ class LocalDatabaseManager {
   }
 
   markNotificationRead(id: string): void {
-    const list = this.getNotifications().map((n) => (n.id === id ? { ...n, isRead: true } : n));
+    const list = this.getAllNotifications().map((n) => (n.id === id ? { ...n, isRead: true } : n));
     this.setStorage(STORAGE_KEYS.NOTIFICATIONS, list);
   }
 
   markAllNotificationsRead(): void {
-    const list = this.getNotifications().map((n) => ({ ...n, isRead: true }));
+    const activeTenant = this.getActiveTenantId();
+    const currentUser = this.getCurrentUser();
+    const list = this.getAllNotifications().map((n) => {
+      if (currentUser.role === 'Provider Admin' || (n.tenantId || 'comp_01') === activeTenant) {
+        return { ...n, isRead: true };
+      }
+      return n;
+    });
     this.setStorage(STORAGE_KEYS.NOTIFICATIONS, list);
   }
 
   deleteNotification(id: string): void {
-    const list = this.getNotifications().filter((n) => n.id !== id);
+    const list = this.getAllNotifications().filter((n) => n.id !== id);
     this.setStorage(STORAGE_KEYS.NOTIFICATIONS, list);
   }
 
-  // Check and dispatch automatic subscription alerts (7 days, 3 days, 1 day, expired)
   checkSubscriptionAlerts(): void {
     const activeSub = this.getActiveSubscription();
     if (!activeSub) return;
@@ -815,6 +1364,7 @@ class LocalDatabaseManager {
     if (daysLeft <= 0 && !alreadyNotified('expired')) {
       this.addNotification({
         id: `notif_exp_${Date.now()}`,
+        tenantId: activeSub.tenantId,
         title: 'Subscription Expired',
         message: 'Your TruckBook subscription has expired. Please renew to restore full operational access.',
         category: 'subscription',
@@ -829,6 +1379,7 @@ class LocalDatabaseManager {
     } else if (daysLeft === 1 && !alreadyNotified('1day')) {
       this.addNotification({
         id: `notif_exp1_${Date.now()}`,
+        tenantId: activeSub.tenantId,
         title: 'Subscription Expiring Tomorrow',
         message: 'Your TruckBook subscription will expire tomorrow. Renew now to avoid interruption.',
         category: 'subscription',
@@ -843,6 +1394,7 @@ class LocalDatabaseManager {
     } else if (daysLeft <= 3 && daysLeft > 1 && !alreadyNotified('3days')) {
       this.addNotification({
         id: `notif_exp3_${Date.now()}`,
+        tenantId: activeSub.tenantId,
         title: 'Subscription Expiring in 3 Days',
         message: `Your TruckBook subscription will expire in ${daysLeft} days.`,
         category: 'subscription',
@@ -857,6 +1409,7 @@ class LocalDatabaseManager {
     } else if (daysLeft <= 7 && daysLeft > 3 && !alreadyNotified('7days')) {
       this.addNotification({
         id: `notif_exp7_${Date.now()}`,
+        tenantId: activeSub.tenantId,
         title: 'Subscription Expiring in 7 Days',
         message: 'Your TruckBook subscription will expire in 7 days.',
         category: 'subscription',
@@ -873,6 +1426,7 @@ class LocalDatabaseManager {
 
   // RESET TO DEFAULT
   resetDatabase(): void {
+    localStorage.removeItem(STORAGE_KEYS.COMPANIES);
     localStorage.removeItem(STORAGE_KEYS.COMPANY);
     localStorage.removeItem(STORAGE_KEYS.TRUCKS);
     localStorage.removeItem(STORAGE_KEYS.DRIVERS);
@@ -889,7 +1443,9 @@ class LocalDatabaseManager {
     localStorage.removeItem(STORAGE_KEYS.USERS);
     localStorage.removeItem(STORAGE_KEYS.SUBSCRIPTIONS);
     localStorage.removeItem(STORAGE_KEYS.SUBSCRIPTION_PLANS);
+    localStorage.removeItem(STORAGE_KEYS.PAYMENTS);
     localStorage.removeItem(STORAGE_KEYS.CURRENT_USER_ID);
+    localStorage.removeItem(STORAGE_KEYS.ACTIVE_TENANT_ID);
   }
 }
 

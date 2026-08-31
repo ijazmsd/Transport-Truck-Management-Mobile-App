@@ -20,6 +20,7 @@ import {
   SubscriptionPlanId,
   Company,
   SubscriptionStatus,
+  PaymentMethod,
 } from '../types';
 
 interface Props {
@@ -32,7 +33,7 @@ interface Props {
     planId: SubscriptionPlanId,
     durationMonths: number,
     pricePaid: number,
-    paymentMethod: string
+    paymentMethod: PaymentMethod
   ) => void;
   onRenewCurrent: (subId: string, durationMonths: number) => void;
   onSimulateStatus?: (status: SubscriptionStatus, daysLeft: number) => void;
@@ -51,7 +52,7 @@ export const SubscriptionModal: React.FC<Props> = ({
   const [selectedPlanId, setSelectedPlanId] = useState<SubscriptionPlanId>(
     activeSubscription?.planId || 'half_yearly'
   );
-  const [paymentMethod, setPaymentMethod] = useState<'Bank Transfer' | 'EasyPaisa' | 'JazzCash' | 'Cash'>(
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(
     'Bank Transfer'
   );
   const [refNumber, setRefNumber] = useState('');
@@ -223,11 +224,11 @@ export const SubscriptionModal: React.FC<Props> = ({
                   Payment Method
                 </label>
                 <div className="grid grid-cols-2 gap-1.5">
-                  {(['Bank Transfer', 'EasyPaisa', 'JazzCash', 'Cash'] as const).map((method) => (
+                  {(['Bank Transfer', 'Credit/Debit Card', 'EasyPaisa/JazzCash', 'Cash'] as const).map((method) => (
                     <button
                       type="button"
                       key={method}
-                      onClick={() => setPaymentMethod(method)}
+                      onClick={() => setPaymentMethod(method as PaymentMethod)}
                       className={`py-1.5 px-2 rounded-xl text-xs font-semibold border transition text-center ${
                         paymentMethod === method
                           ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
