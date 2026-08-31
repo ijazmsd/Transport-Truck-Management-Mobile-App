@@ -11,6 +11,7 @@ import {
   Crown,
   Calculator,
   PlusCircle,
+  LogOut,
 } from 'lucide-react';
 
 interface Props {
@@ -23,6 +24,7 @@ interface Props {
   activeTenantId?: string;
   onSwitchTenant?: (tenantId: string) => void;
   onOpenClientRegistration?: () => void;
+  onRequestLogout?: () => void;
 }
 
 export const UserSwitcher: React.FC<Props> = ({
@@ -35,6 +37,7 @@ export const UserSwitcher: React.FC<Props> = ({
   activeTenantId,
   onSwitchTenant,
   onOpenClientRegistration,
+  onRequestLogout,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [tab, setTab] = useState<'users' | 'tenants'>('users');
@@ -275,6 +278,19 @@ export const UserSwitcher: React.FC<Props> = ({
                 >
                   <Shield className="w-3.5 h-3.5" />
                   <span>User & RBAC Management</span>
+                </button>
+              )}
+
+              {onRequestLogout && (
+                <button
+                  onClick={() => {
+                    setIsOpen(false);
+                    onRequestLogout();
+                  }}
+                  className="w-full py-1.5 px-2 bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
+                >
+                  <LogOut className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Log Out / Exit Session</span>
                 </button>
               )}
             </div>

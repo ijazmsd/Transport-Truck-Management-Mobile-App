@@ -22,6 +22,7 @@ import {
   NotificationCategory,
   PaymentRecord,
   PaymentMethod,
+  AuthSession,
 } from '../types';
 import {
   INITIAL_COMPANIES,
@@ -65,6 +66,7 @@ const STORAGE_KEYS = {
   PAYMENTS: 'truckbook_payments_saas_v3',
   CURRENT_USER_ID: 'truckbook_current_user_id_saas_v3',
   ACTIVE_TENANT_ID: 'truckbook_active_tenant_id_saas_v3',
+  AUTH_SESSION: 'truckbook_auth_session_saas_v3',
 };
 
 class LocalDatabaseManager {
@@ -84,6 +86,153 @@ class LocalDatabaseManager {
     } catch (e) {
       console.error('Failed to write to localStorage', e);
     }
+  }
+
+  // ==========================================
+  // AUTHENTICATION & SESSION MANAGEMENT
+  // ==========================================
+  getSession(): AuthSession | null {
+    const session = this.getStorage<AuthSession | null>(STORAGE_KEYS.AUTH_SESSION, null);
+    if (!session) return null;
+
+    // Check session expiry
+    if (Date.now() > session.expiresAt) {
+      this.logout();
+      return null;
+    }
+
+    // Verify user exists and is active
+    const user = this.getUserById(session.userId);
+    if (!user || user.status === 'Rejected' || user.status === 'Suspended' || user.status === 'Deactivated') {
+      this.logout();
+      return null;
+    }
+
+    return session;
+  }
+
+  saveSession(session: AuthSession): void {
+    this.setStorage(STORAGE_KEYS.AUTH_SESSION, session);
+  }
+
+  login(
+    email: string,
+    password: string,
+    rememberMe = false
+  ): {
+    success: boolean;
+    user?: User;
+    session?: AuthSession;
+    redirectPath?: string;
+    error?: string;
+  } {
+    const normalizedEmail = email.trim().toLowerCase();
+    const cleanPassword = password.trim();
+
+    if (!normalizedEmail || !cleanPassword) {
+      return { success: false, error: 'Please provide both email and password.' };
+    }
+
+    const allUsers = this.getAllUsers();
+    const user = allUsers.find((u) => u.email.toLowerCase() === normalizedEmail);
+
+    if (!user) {
+      return { success: false, error: 'Invalid email or password.' };
+    }
+
+    // Validate password (supports stored password or fallback password123)
+    const expectedPassword = user.password || 'password123';
+    if (cleanPassword !== expectedPassword) {
+      return { success: false, error: 'Invalid email or password.' };
+    }
+
+    // Check account status
+    if (user.status === 'Suspended' || user.status === 'Rejected' || user.status === 'Deactivated') {
+      return { success: false, error: 'Your account has been disabled. Please contact support.' };
+    }
+
+    if (user.status === 'Pending Approval') {
+      return {
+        success: false,
+        error: 'Your account is pending administrator approval. Please check back shortly.',
+      };
+    }
+
+    // Generate authenticated session
+    const sessionToken = `tb_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
+    const sessionDuration = rememberMe ? 30 * 86400000 : 7 * 86400000;
+    const authSession: AuthSession = {
+      token: sessionToken,
+      userId: user.id,
+      tenantId: user.tenantId || user.companyId,
+      role: user.role,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + sessionDuration,
+      rememberMe,
+    };
+
+    this.saveSession(authSession);
+    this.setCurrentUserId(user.id);
+
+    if (user.tenantId) {
+      this.setActiveTenantId(user.tenantId);
+    }
+
+    const redirectPath = this.getLoginRedirectPath(user);
+
+    return {
+      success: true,
+      user,
+      session: authSession,
+      redirectPath,
+    };
+  }
+
+  logout(): void {
+    try {
+      localStorage.removeItem(STORAGE_KEYS.AUTH_SESSION);
+      localStorage.removeItem(STORAGE_KEYS.CURRENT_USER_ID);
+      localStorage.removeItem(STORAGE_KEYS.ACTIVE_TENANT_ID);
+    } catch (e) {
+      console.error('Failed during logout cleanup', e);
+    }
+  }
+
+  getLoginRedirectPath(user: User): string {
+    if (user.role === 'Provider Admin') {
+      return '/provider/dashboard';
+    }
+
+    if (user.role === 'Driver') {
+      return '/driver-dashboard';
+    }
+
+    if (user.role === 'Manager' || user.role === 'Accountant') {
+      return '/dashboard';
+    }
+
+    // For Company Admin & Fleet Owners, check subscription status & onboarding state
+    const tenantId = user.tenantId || user.companyId || this.getActiveTenantId();
+    const activeSub = this.getActiveSubscription(tenantId);
+
+    if (!activeSub) {
+      return '/plans';
+    }
+
+    if (activeSub.status === 'Expired') {
+      return '/subscription-expired';
+    }
+
+    const company = this.getCompany(tenantId);
+    if (
+      company &&
+      company.onboardingStatus === 'subscribed' &&
+      (!company.registrationNumber || company.registrationNumber.trim() === '')
+    ) {
+      return '/company-setup';
+    }
+
+    return '/dashboard';
   }
 
   // ==========================================
@@ -142,54 +291,139 @@ class LocalDatabaseManager {
     this.saveCompany(comp);
   }
 
-  // Complete SaaS Client Onboarding Flow
+  // SaaS Client Onboarding & Registration (Without auto-login)
   registerClient(payload: {
     userName: string;
     userEmail: string;
     userPhone: string;
     companyName: string;
-    planId: SubscriptionPlanId;
-    paymentMethod: PaymentMethod;
+    password: string;
+    planId?: SubscriptionPlanId;
+    paymentMethod?: PaymentMethod;
     city?: string;
     address?: string;
-  }): { user: User; company: Company; subscription: Subscription } {
+  }): {
+    success: boolean;
+    user?: User;
+    company?: Company;
+    subscription?: Subscription;
+    message: string;
+    error?: string;
+  } {
+    const normalizedEmail = payload.userEmail.trim().toLowerCase();
+
+    // 1. Validation
+    if (!payload.userName.trim()) {
+      return { success: false, message: '', error: 'Full name is required.' };
+    }
+    if (!normalizedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return { success: false, message: '', error: 'Please enter a valid email address.' };
+    }
+    if (!payload.userPhone.trim()) {
+      return { success: false, message: '', error: 'Phone number is required.' };
+    }
+    if (!payload.companyName.trim()) {
+      return { success: false, message: '', error: 'Transport company name is required.' };
+    }
+    if (!payload.password || payload.password.trim().length < 6) {
+      return { success: false, message: '', error: 'Password must be at least 6 characters.' };
+    }
+
+    // 2. Check for duplicate email across all users
+    const allUsers = this.getAllUsers();
+    const existing = allUsers.find((u) => u.email.toLowerCase() === normalizedEmail);
+    if (existing) {
+      return {
+        success: false,
+        message: '',
+        error: 'An account with this email address already exists. Please login or use a different email.',
+      };
+    }
+
     const tenantId = `comp_${Date.now()}`;
     const userId = `usr_${Date.now()}`;
-    const subId = `sub_${Date.now()}`;
-    const payId = `pay_${Date.now()}`;
+    let subId: string | undefined = undefined;
+    let newSubscription: Subscription | undefined = undefined;
 
-    const plans = this.getSubscriptionPlans();
-    const selectedPlan = plans.find((p) => p.id === payload.planId) || plans[0];
+    // 3. Create Subscription if plan selected
+    if (payload.planId) {
+      const plans = this.getSubscriptionPlans();
+      const selectedPlan = plans.find((p) => p.id === payload.planId) || plans[0];
+      subId = `sub_${Date.now()}`;
+      const payId = `pay_${Date.now()}`;
 
-    const startDate = new Date();
-    const expiryDate = new Date();
-    expiryDate.setMonth(expiryDate.getMonth() + selectedPlan.durationMonths);
+      const startDate = new Date();
+      const expiryDate = new Date();
+      expiryDate.setMonth(expiryDate.getMonth() + selectedPlan.durationMonths);
 
-    // 1. Create Company
+      newSubscription = {
+        id: subId,
+        tenantId,
+        companyId: tenantId,
+        userId,
+        planId: selectedPlan.id,
+        planName: selectedPlan.name,
+        durationMonths: selectedPlan.durationMonths,
+        startDate: startDate.toISOString().split('T')[0],
+        expiryDate: expiryDate.toISOString().split('T')[0],
+        status: 'Active',
+        pricePaid: selectedPlan.price,
+        paymentMethod: payload.paymentMethod || 'Bank Transfer',
+        paymentStatus: 'Completed',
+        autoRenew: true,
+        maxUsers: selectedPlan.maxUsers,
+        maxDrivers: selectedPlan.maxDrivers,
+        maxTrucks: selectedPlan.maxTrucks,
+        notes: `Initial onboarding subscription for ${selectedPlan.name}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      this.saveSubscription(newSubscription);
+
+      // Create Payment Record
+      const newPayment: PaymentRecord = {
+        id: payId,
+        tenantId,
+        subscriptionId: subId,
+        userId,
+        amount: selectedPlan.price,
+        currency: 'PKR',
+        paymentMethod: payload.paymentMethod || 'Bank Transfer',
+        status: 'Success',
+        transactionRef: `ONBOARD-${Date.now().toString().slice(-6)}`,
+        planName: selectedPlan.name,
+        billingCycle: `${selectedPlan.durationMonths} Month(s)`,
+        createdAt: Date.now(),
+      };
+      this.addPayment(newPayment);
+    }
+
+    // 4. Create Company
     const newCompany: Company = {
       id: tenantId,
-      name: payload.companyName,
-      phone: payload.userPhone,
-      email: payload.userEmail,
+      name: payload.companyName.trim(),
+      phone: payload.userPhone.trim(),
+      email: normalizedEmail,
       city: payload.city || 'Lahore',
-      address: payload.address || 'Truck Stand, Main Hub',
+      address: payload.address || 'Main Transport Terminal',
       country: 'Pakistan',
       currency: 'PKR',
       status: 'Active',
       ownerUserId: userId,
       subscriptionId: subId,
-      onboardingStatus: 'completed',
+      onboardingStatus: subId ? 'subscribed' : 'registered',
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
     this.saveCompany(newCompany);
 
-    // 2. Create User (Company Admin)
+    // 5. Create User (Company Admin) with Password
     const newUser: User = {
       id: userId,
-      name: payload.userName,
-      email: payload.userEmail,
-      phone: payload.userPhone,
+      name: payload.userName.trim(),
+      email: normalizedEmail,
+      phone: payload.userPhone.trim(),
+      password: payload.password.trim(),
       role: 'Company Admin',
       status: 'Active',
       tenantId: tenantId,
@@ -200,69 +434,53 @@ class LocalDatabaseManager {
     };
     this.saveUser(newUser);
 
-    // 3. Create Subscription
-    const newSubscription: Subscription = {
-      id: subId,
-      tenantId: tenantId,
-      companyId: tenantId,
-      userId: userId,
-      planId: selectedPlan.id,
-      planName: selectedPlan.name,
-      durationMonths: selectedPlan.durationMonths,
-      startDate: startDate.toISOString().split('T')[0],
-      expiryDate: expiryDate.toISOString().split('T')[0],
-      status: 'Active',
-      pricePaid: selectedPlan.price,
-      paymentMethod: payload.paymentMethod,
-      paymentStatus: 'Completed',
-      autoRenew: true,
-      maxUsers: selectedPlan.maxUsers,
-      maxDrivers: selectedPlan.maxDrivers,
-      maxTrucks: selectedPlan.maxTrucks,
-      notes: `Initial onboarding subscription for ${selectedPlan.name}`,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-    this.saveSubscription(newSubscription);
-
-    // 4. Create Payment Record
-    const newPayment: PaymentRecord = {
-      id: payId,
-      tenantId: tenantId,
-      subscriptionId: subId,
-      userId: userId,
-      amount: selectedPlan.price,
-      currency: 'PKR',
-      paymentMethod: payload.paymentMethod,
-      status: 'Success',
-      transactionRef: `ONBOARD-${Date.now().toString().slice(-6)}`,
-      planName: selectedPlan.name,
-      billingCycle: `${selectedPlan.durationMonths} Month(s)`,
-      createdAt: Date.now(),
-    };
-    this.addPayment(newPayment);
-
-    // 5. Welcome Notification
+    // 6. Welcome Notification
     this.addNotification({
       id: `notif_welcome_${Date.now()}`,
       tenantId: tenantId,
       userId: userId,
       title: 'Welcome to TruckBook SaaS!',
-      message: `Your transport company "${payload.companyName}" is live with the ${selectedPlan.name}. Add your trucks & drivers to get rolling!`,
+      message: `Your transport company "${payload.companyName}" account has been created. Please sign in to configure your fleet.`,
       category: 'subscription',
       type: 'system',
       severity: 'success',
       targetRole: 'Admin',
-      date: newSubscription.startDate,
+      date: new Date().toISOString().split('T')[0],
       isRead: false,
       createdAt: Date.now(),
     });
 
-    // Automatically log in as new user & switch tenant
-    this.setCurrentUserId(userId);
-    this.setActiveTenantId(tenantId);
+    // NOTE: Explicitly DO NOT auto-login. The client will be redirected to /login.
+    return {
+      success: true,
+      user: newUser,
+      company: newCompany,
+      subscription: newSubscription,
+      message: 'Registration successful! Your account has been created. Please login to continue.',
+    };
+  }
 
-    return { user: newUser, company: newCompany, subscription: newSubscription };
+  // Complete Company Setup Profile
+  completeCompanySetup(
+    tenantId: string,
+    details: {
+      registrationNumber?: string;
+      taxNumber?: string;
+      city?: string;
+      address?: string;
+      phone?: string;
+      currency?: Currency;
+    }
+  ): Company {
+    const company = this.getCompany(tenantId);
+    const updated: Company = {
+      ...company,
+      ...details,
+      onboardingStatus: 'completed',
+      updatedAt: Date.now(),
+    };
+    this.saveCompany(updated);
+    return updated;
   }
 
   // ==========================================
@@ -394,12 +612,25 @@ class LocalDatabaseManager {
     this.setStorage(STORAGE_KEYS.USERS, users);
   }
 
-  getCurrentUser(): User {
-    const currentId = this.getStorage<string>(STORAGE_KEYS.CURRENT_USER_ID, 'usr_admin');
-    const user = this.getUserById(currentId);
-    if (user) return user;
-    const users = this.getAllUsers();
-    return users[0] || INITIAL_USERS[0];
+  getAuthenticatedUser(): User | null {
+    const session = this.getSession();
+    if (!session) return null;
+    const user = this.getUserById(session.userId);
+    if (!user || user.status === 'Suspended' || user.status === 'Rejected' || user.status === 'Deactivated') {
+      return null;
+    }
+    return user;
+  }
+
+  getCurrentUser(): User | null {
+    const authUser = this.getAuthenticatedUser();
+    if (authUser) return authUser;
+    const currentId = this.getStorage<string | null>(STORAGE_KEYS.CURRENT_USER_ID, null);
+    if (currentId) {
+      const user = this.getUserById(currentId);
+      if (user) return user;
+    }
+    return null;
   }
 
   setCurrentUserId(userId: string): void {
@@ -509,7 +740,7 @@ class LocalDatabaseManager {
       id: `sub_${Date.now()}`,
       tenantId: targetTenant,
       companyId: targetTenant,
-      userId: userId || this.getCurrentUser().id,
+      userId: userId || this.getCurrentUser()?.id || 'usr_admin',
       planId,
       planName: plan.name,
       durationMonths,

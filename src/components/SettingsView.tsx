@@ -16,6 +16,7 @@ import {
   Users,
   CreditCard,
   ChevronRight,
+  LogOut,
 } from 'lucide-react';
 
 interface Props {
@@ -28,6 +29,7 @@ interface Props {
   onOpenSubscription?: () => void;
   onOpenUserManagement?: () => void;
   onOpenNotifications?: () => void;
+  onRequestLogout?: () => void;
 }
 
 export const SettingsView: React.FC<Props> = ({
@@ -40,6 +42,7 @@ export const SettingsView: React.FC<Props> = ({
   onOpenSubscription,
   onOpenUserManagement,
   onOpenNotifications,
+  onRequestLogout,
 }) => {
   const [formData, setFormData] = useState({
     name: company.name,
@@ -250,6 +253,35 @@ export const SettingsView: React.FC<Props> = ({
           <span>Save Changes</span>
         </button>
       </form>
+
+      {/* Account Session & Logout Card */}
+      {onRequestLogout && (
+        <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs space-y-3 text-xs">
+          <h2 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5 mb-1">
+            <LogOut className="w-4 h-4 text-rose-600" />
+            <span>Account Session & Security</span>
+          </h2>
+
+          <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between text-[11px]">
+            <div>
+              <div className="font-bold text-slate-900">{currentUser?.name || 'Logged in user'}</div>
+              <div className="text-slate-500">{currentUser?.email || ''} • {currentUser?.role || ''}</div>
+            </div>
+            <span className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">
+              Session Active
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={onRequestLogout}
+            className="w-full bg-rose-600 hover:bg-rose-700 active:scale-98 text-white font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 shadow-sm transition cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sign Out / Log Out</span>
+          </button>
+        </div>
+      )}
 
       {/* Database Management Card */}
       <div className="bg-white rounded-2xl p-4 border border-slate-200/80 shadow-xs space-y-3 text-xs">

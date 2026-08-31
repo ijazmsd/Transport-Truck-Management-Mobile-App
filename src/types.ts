@@ -65,6 +65,16 @@ export type MaintenanceType =
   | 'Clutch & Gearbox'
   | 'General Overhaul';
 
+export interface AuthSession {
+  token: string;
+  userId: string;
+  tenantId?: string;
+  role: UserRole;
+  createdAt: number;
+  expiresAt: number;
+  rememberMe?: boolean;
+}
+
 export interface User {
   id: string;
   name: string;
