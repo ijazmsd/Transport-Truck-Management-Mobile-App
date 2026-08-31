@@ -13,6 +13,12 @@ import {
   FuelEntry,
   MaintenanceRecord,
   DriverSalarySettlement,
+  User,
+  Subscription,
+  SubscriptionPlan,
+  SubscriptionPlanId,
+  SubscriptionStatus,
+  UserStatus,
 } from './types';
 import { db } from './data/db';
 import { MobileFrame } from './components/MobileFrame';
@@ -30,6 +36,11 @@ import { MaintenanceView } from './components/MaintenanceView';
 import { PayrollView } from './components/PayrollView';
 import { PrintDocumentModal, PrintableDocumentType } from './components/PrintDocumentModal';
 import { FlutterCodeViewer } from './components/FlutterCodeViewer';
+import { NotificationModal } from './components/NotificationModal';
+import { UserManagementModal } from './components/UserManagementModal';
+import { UserRegistrationModal } from './components/UserRegistrationModal';
+import { SubscriptionModal } from './components/SubscriptionModal';
+import { DriverExpenseModal } from './components/DriverExpenseModal';
 import {
   Truck as TruckIcon,
   Users,
@@ -40,6 +51,12 @@ import {
   DollarSign,
   Receipt,
   FileCheck,
+  Sparkles,
+  AlertTriangle,
+  Clock,
+  ShieldAlert,
+  LogIn,
+  UserCheck,
 } from 'lucide-react';
 
 export default function App() {
@@ -50,6 +67,13 @@ export default function App() {
   >('expenses');
   const [isCodeView, setIsCodeView] = useState<boolean>(false);
   const [initialExpenseTripId, setInitialExpenseTripId] = useState<string | undefined>(undefined);
+
+  // Modals state
+  const [isNotificationOpen, setIsNotificationOpen] = useState(false);
+  const [isUserManagementOpen, setIsUserManagementOpen] = useState(false);
+  const [isRegistrationOpen, setIsRegistrationOpen] = useState(false);
+  const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
+  const [isDriverExpenseOpen, setIsDriverExpenseOpen] = useState(false);
 
   // Print Document Engine State
   const [printableModal, setPrintableModal] = useState<{
@@ -62,7 +86,7 @@ export default function App() {
     data: null,
   });
 
-  // Core Data States loaded from Local SQLite / Storage
+  // Core Data States loaded from Local Storage / SQLite engine
   const [company, setCompany] = useState<Company>(() => db.getCompany());
   const [trucks, setTrucks] = useState<Truck[]>(() => db.getTrucks());
   const [drivers, setDrivers] = useState<Driver[]>(() => db.getDrivers());
@@ -82,7 +106,16 @@ export default function App() {
     db.getSalarySettlements()
   );
   const [notifications, setNotifications] = useState<AppNotification[]>(() => db.getNotifications());
+  const [users, setUsers] = useState<User[]>(() => db.getUsers());
+  const [currentUser, setCurrentUser] = useState<User>(() => db.getCurrentUser());
+  const [activeSubscription, setActiveSubscription] = useState<Subscription | undefined>(() =>
+    db.getActiveSubscription()
+  );
+  const [subscriptionPlans, setSubscriptionPlans] = useState<SubscriptionPlan[]>(() =>
+    db.getSubscriptionPlans()
+  );
 
+  // Sync state from DB
   const refreshState = () => {
     setCompany(db.getCompany());
     setTrucks(db.getTrucks());
@@ -97,7 +130,17 @@ export default function App() {
     setMaintenanceRecords(db.getMaintenanceRecords());
     setSettlements(db.getSalarySettlements());
     setNotifications(db.getNotifications());
+    setUsers(db.getUsers());
+    setCurrentUser(db.getCurrentUser());
+    setActiveSubscription(db.getActiveSubscription());
+    setSubscriptionPlans(db.getSubscriptionPlans());
   };
+
+  // Check subscription alerts periodically
+  useEffect(() => {
+    db.checkSubscriptionAlerts();
+    setNotifications(db.getNotifications());
+  }, []);
 
   // CRUD Handlers
   const handleSaveTruck = (truck: Truck) => {
@@ -150,6 +193,139 @@ export default function App() {
     refreshState();
   };
 
+  // Expense Approval Workflow Handlers
+  const handleApproveExpense = (expenseId: string) => {
+    db.approveExpense(expenseId, `${currentUser.name} (${currentUser.role})`);
+    refreshState();
+  };
+
+  const handleRejectExpense = (expenseId: string, reason: string) => {
+    db.rejectExpense(expenseId, reason, `${currentUser.name} (${currentUser.role})`);
+    refreshState();
+  };
+
+  // User & RBAC Management Handlers
+  const handleSelectUser = (user: User) => {
+    db.setCurrentUserId(user.id);
+    setCurrentUser(user);
+    refreshState();
+  };
+
+  const handleApproveUser = (userId: string) => {
+    db.approveUser(userId, `${currentUser.name} (${currentUser.role})`);
+    refreshState();
+  };
+
+  const handleRejectUser = (userId: string, reason: string) => {
+    db.rejectUser(userId, reason, `${currentUser.name} (${currentUser.role})`);
+    refreshState();
+  };
+
+  const handleToggleUserStatus = (userId: string, status: UserStatus) => {
+    const user = users.find((u) => u.id === userId);
+    if (user) {
+      db.saveUser({ ...user, status, updatedAt: Date.now() });
+      refreshState();
+    }
+  };
+
+  const handleSaveUser = (user: User) => {
+    db.saveUser(user);
+    refreshState();
+  };
+
+  const handleRegisterUser = (userData: Partial<User>) => {
+    const user: User = {
+      id: userData.id || `usr_${Date.now()}`,
+      name: userData.name || 'New Driver',
+      phone: userData.phone || '+92 300 0000000',
+      email: userData.email,
+      role: userData.role || 'Driver',
+      status: 'Pending Approval',
+      notes: userData.notes,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    db.saveUser(user);
+
+    // Notify Admin
+    db.addNotification({
+      title: 'New Registration Request',
+      message: `${user.name} requested to join Al-Madina Transport as a ${user.role}. Phone: ${user.phone}.`,
+      type: 'registration',
+      category: 'user',
+      targetRole: 'Admin',
+      relatedId: user.id,
+      severity: 'warning',
+    });
+
+    refreshState();
+  };
+
+  // Subscription Management Handlers
+  const handleSelectPlan = (
+    planId: SubscriptionPlanId,
+    durationMonths: number,
+    pricePaid: number,
+    paymentMethod: string
+  ) => {
+    db.createSubscription(planId, durationMonths, pricePaid, paymentMethod);
+    refreshState();
+  };
+
+  const handleRenewCurrentSubscription = (subId: string, durationMonths: number) => {
+    db.renewSubscription(subId, durationMonths);
+    refreshState();
+  };
+
+  const handleSimulateSubscriptionStatus = (status: SubscriptionStatus, daysLeft: number) => {
+    const sub = db.getActiveSubscription();
+    if (sub) {
+      const expDate = new Date(Date.now() + daysLeft * 86400000).toISOString().split('T')[0];
+      const updatedSub: Subscription = {
+        ...sub,
+        status,
+        expiryDate: expDate,
+        updatedAt: Date.now(),
+      };
+      db.saveSubscription(updatedSub);
+      db.checkSubscriptionAlerts();
+      refreshState();
+    }
+  };
+
+  // Notification Handlers
+  const handleMarkNotificationRead = (id: string) => {
+    db.markNotificationRead(id);
+    refreshState();
+  };
+
+  const handleMarkAllNotificationsRead = () => {
+    db.markAllNotificationsRead();
+    refreshState();
+  };
+
+  const handleDeleteNotification = (id: string) => {
+    db.deleteNotification(id);
+    refreshState();
+  };
+
+  const handleNotificationAction = (notification: AppNotification) => {
+    setIsNotificationOpen(false);
+    if (notification.category === 'expense' || notification.type === 'expense') {
+      setActiveTab('finance');
+      setFinanceSubTab('expenses');
+    } else if (notification.category === 'user' || notification.type === 'registration') {
+      setIsUserManagementOpen(true);
+    } else if (notification.category === 'subscription' || notification.type === 'subscription') {
+      setIsSubscriptionOpen(true);
+    } else if (notification.category === 'document') {
+      setActiveTab('fleet');
+      setFleetSubTab('trucks');
+    }
+  };
+
+  // Supplier & Fuel Handlers
   const handleSaveSupplier = (supplier: Supplier) => {
     db.saveSupplier(supplier);
     refreshState();
@@ -217,16 +393,105 @@ export default function App() {
     (t) => t.status === 'In Progress' || t.status === 'Assigned'
   ).length;
 
+  const unreadNotificationsCount = notifications.filter((n) => {
+    if (n.isRead) return false;
+    if (!n.targetRole || n.targetRole === 'all') return true;
+    return n.targetRole === currentUser.role;
+  }).length;
+
+  // Account Status Gate: If user is Pending Approval or Rejected
+  const isAccountRestricted = currentUser.status === 'Pending Approval' || currentUser.status === 'Rejected';
+
   return (
     <MobileFrame
       activeTab={activeTab}
       isCodeView={isCodeView}
       onToggleCodeView={() => setIsCodeView(!isCodeView)}
+      unreadNotificationsCount={unreadNotificationsCount}
+      onOpenNotifications={() => setIsNotificationOpen(true)}
+      currentUser={currentUser}
+      allUsers={users}
+      onSelectUser={handleSelectUser}
+      onOpenUserManagement={() => setIsUserManagementOpen(true)}
+      onOpenRegistration={() => setIsRegistrationOpen(true)}
     >
       {isCodeView ? (
         <FlutterCodeViewer />
+      ) : isAccountRestricted ? (
+        /* Account Restricted / Pending State Screen */
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-100 text-slate-900 overflow-y-auto">
+          <div
+            className={`w-16 h-16 rounded-3xl flex items-center justify-center mb-4 shadow-sm ${
+              currentUser.status === 'Pending Approval'
+                ? 'bg-amber-100 text-amber-600'
+                : 'bg-rose-100 text-rose-600'
+            }`}
+          >
+            {currentUser.status === 'Pending Approval' ? (
+              <Clock className="w-8 h-8" />
+            ) : (
+              <ShieldAlert className="w-8 h-8" />
+            )}
+          </div>
+
+          <span
+            className={`px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider mb-2 ${
+              currentUser.status === 'Pending Approval'
+                ? 'bg-amber-200 text-amber-900'
+                : 'bg-rose-200 text-rose-900'
+            }`}
+          >
+            Account {currentUser.status}
+          </span>
+
+          <h2 className="text-lg font-extrabold text-slate-900">{currentUser.name}</h2>
+          <p className="text-xs text-slate-600 max-w-xs mt-1.5 leading-relaxed">
+            {currentUser.status === 'Pending Approval'
+              ? 'Your account request is currently awaiting Administrator review. Access to trip logs, bilty invoices, and payroll will be enabled once approved.'
+              : 'Your account access has been declined by the Fleet Admin. Please contact operations dispatch.'}
+          </p>
+
+          <div className="w-full max-w-xs space-y-2 mt-6">
+            <button
+              onClick={() => {
+                // Switch back to Admin to review or continue testing
+                const adminUser = users.find((u) => u.role === 'Admin') || users[0];
+                handleSelectUser(adminUser);
+              }}
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold flex items-center justify-center gap-2 shadow-sm transition"
+            >
+              <LogIn className="w-4 h-4" />
+              <span>Switch Back to Admin Tariq</span>
+            </button>
+
+            <button
+              onClick={() => setIsRegistrationOpen(true)}
+              className="w-full py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold"
+            >
+              Submit New Registration
+            </button>
+          </div>
+        </div>
       ) : (
         <>
+          {/* Subscription Expired Warning Banner (if applicable) */}
+          {activeSubscription && activeSubscription.status === 'Expired' && (
+            <div className="bg-rose-600 text-white px-3.5 py-2 flex items-center justify-between text-xs shadow-md shrink-0">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <AlertTriangle className="w-4 h-4 shrink-0 animate-bounce" />
+                <span className="truncate font-semibold">
+                  Subscription Expired! Renew to keep fleet sync active.
+                </span>
+              </div>
+              <button
+                onClick={() => setIsSubscriptionOpen(true)}
+                className="px-2.5 py-0.5 bg-white text-rose-700 font-bold rounded-lg text-[11px] shrink-0 hover:bg-rose-50 transition shadow-xs"
+              >
+                Renew Now
+              </button>
+            </div>
+          )}
+
           {/* Main Dashboard Screen */}
           {activeTab === 'dashboard' && (
             <DashboardView
@@ -237,6 +502,9 @@ export default function App() {
               trips={trips}
               expenses={expenses}
               notifications={notifications}
+              currentUser={currentUser}
+              activeSubscription={activeSubscription}
+              allUsers={users}
               onNavigate={(tab) => {
                 setActiveTab(tab);
                 setIsCodeView(false);
@@ -252,9 +520,10 @@ export default function App() {
                 setActiveTab('trips');
               }}
               onCreateExpense={() => {
-                setActiveTab('finance');
-                setFinanceSubTab('expenses');
+                setIsDriverExpenseOpen(true);
               }}
+              onOpenSubscription={() => setIsSubscriptionOpen(true)}
+              onOpenUserManagement={() => setIsUserManagementOpen(true)}
             />
           )}
 
@@ -271,8 +540,7 @@ export default function App() {
               onDeleteTrip={handleDeleteTrip}
               onAddExpenseForTrip={(tripId) => {
                 setInitialExpenseTripId(tripId);
-                setActiveTab('finance');
-                setFinanceSubTab('expenses');
+                setIsDriverExpenseOpen(true);
               }}
               onPrintDocument={openDocumentPrint}
             />
@@ -442,8 +710,11 @@ export default function App() {
                     drivers={drivers}
                     trips={trips}
                     company={company}
+                    currentUser={currentUser}
                     onSaveExpense={handleSaveExpense}
                     onDeleteExpense={handleDeleteExpense}
+                    onApproveExpense={handleApproveExpense}
+                    onRejectExpense={handleRejectExpense}
                     initialTripId={initialExpenseTripId}
                   />
                 )}
@@ -507,9 +778,14 @@ export default function App() {
           {activeTab === 'more' && (
             <SettingsView
               company={company}
+              currentUser={currentUser}
+              activeSubscription={activeSubscription}
               onUpdateCompany={handleUpdateCompany}
               onResetDatabase={handleResetDatabase}
               onOpenCodeViewer={() => setIsCodeView(true)}
+              onOpenSubscription={() => setIsSubscriptionOpen(true)}
+              onOpenUserManagement={() => setIsUserManagementOpen(true)}
+              onOpenNotifications={() => setIsNotificationOpen(true)}
             />
           )}
 
@@ -521,6 +797,73 @@ export default function App() {
               setIsCodeView(false);
             }}
             activeTripsCount={activeTripsCount}
+          />
+
+          {/* Notification Modal Drawer */}
+          <NotificationModal
+            isOpen={isNotificationOpen}
+            notifications={notifications}
+            currentRole={currentUser.role}
+            onClose={() => setIsNotificationOpen(false)}
+            onMarkRead={handleMarkNotificationRead}
+            onMarkAllRead={handleMarkAllNotificationsRead}
+            onDeleteNotification={handleDeleteNotification}
+            onActionClick={handleNotificationAction}
+          />
+
+          {/* User Management & RBAC Modal */}
+          <UserManagementModal
+            isOpen={isUserManagementOpen}
+            users={users}
+            currentUser={currentUser}
+            trucks={trucks}
+            onClose={() => setIsUserManagementOpen(false)}
+            onApproveUser={handleApproveUser}
+            onRejectUser={handleRejectUser}
+            onToggleStatus={handleToggleUserStatus}
+            onSaveUser={handleSaveUser}
+            onDeleteUser={(id) => {
+              db.deleteUser(id);
+              refreshState();
+            }}
+            onSwitchUser={(user) => {
+              handleSelectUser(user);
+              setIsUserManagementOpen(false);
+            }}
+          />
+
+          {/* User Registration Request Modal */}
+          <UserRegistrationModal
+            isOpen={isRegistrationOpen}
+            trucks={trucks}
+            onClose={() => setIsRegistrationOpen(false)}
+            onSubmit={handleRegisterUser}
+          />
+
+          {/* Subscription & Billing Modal */}
+          <SubscriptionModal
+            isOpen={isSubscriptionOpen}
+            activeSubscription={activeSubscription}
+            plans={subscriptionPlans}
+            company={company}
+            onClose={() => setIsSubscriptionOpen(false)}
+            onSelectPlan={handleSelectPlan}
+            onRenewCurrent={handleRenewCurrentSubscription}
+            onSimulateStatus={handleSimulateSubscriptionStatus}
+          />
+
+          {/* Driver Expense & Fuel Submission Modal */}
+          <DriverExpenseModal
+            isOpen={isDriverExpenseOpen}
+            currentUser={currentUser}
+            trips={trips}
+            trucks={trucks}
+            initialTripId={initialExpenseTripId}
+            onClose={() => {
+              setIsDriverExpenseOpen(false);
+              setInitialExpenseTripId(undefined);
+            }}
+            onSubmitExpense={(exp) => handleSaveExpense(exp as Expense)}
           />
 
           {/* Print / PDF Document Modal */}

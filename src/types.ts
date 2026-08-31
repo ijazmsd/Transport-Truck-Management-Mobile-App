@@ -8,6 +8,16 @@ export type SalaryType = 'Monthly' | 'Per Trip' | 'Percentage';
 
 export type TripStatus = 'Draft' | 'Assigned' | 'In Progress' | 'Completed' | 'Cancelled';
 
+export type UserRole = 'Admin' | 'Manager' | 'Driver';
+
+export type UserStatus = 'Pending Approval' | 'Active' | 'Rejected' | 'Deactivated';
+
+export type SubscriptionPlanId = 'monthly' | 'half_yearly' | 'yearly';
+
+export type SubscriptionStatus = 'Active' | 'Expiring Soon' | 'Expired' | 'Suspended' | 'Pending';
+
+export type ExpenseStatus = 'Draft' | 'Pending' | 'Approved' | 'Rejected';
+
 export type ExpenseCategory =
   | 'Fuel'
   | 'Toll'
@@ -19,10 +29,13 @@ export type ExpenseCategory =
   | 'Insurance'
   | 'Registration'
   | 'Repair'
+  | 'Food'
+  | 'Accommodation'
+  | 'Parking'
   | 'Office'
   | 'Other';
 
-export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Cheque' | 'Other';
+export type PaymentMethod = 'Cash' | 'Bank Transfer' | 'Cheque' | 'Company Card' | 'Other';
 
 export type DocType = 'Registration' | 'Insurance' | 'Fitness Certificate' | 'Route Permit' | 'Other';
 
@@ -50,6 +63,60 @@ export type MaintenanceType =
   | 'Clutch & Gearbox'
   | 'General Overhaul';
 
+export interface User {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: UserRole;
+  status: UserStatus;
+  driverId?: string; // Links to Driver entity if role === 'Driver'
+  companyId?: string;
+  subscriptionId?: string;
+  avatar?: string;
+  notes?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface SubscriptionPlan {
+  id: SubscriptionPlanId;
+  name: string;
+  durationMonths: number;
+  price: number;
+  badge?: string;
+  description: string;
+  features: string[];
+  isActive: boolean;
+}
+
+export type NotificationCategory =
+  | 'document'
+  | 'maintenance'
+  | 'trip'
+  | 'payment'
+  | 'user'
+  | 'subscription'
+  | 'expense';
+
+export interface Subscription {
+  id: string;
+  userId?: string;
+  companyId: string;
+  planId: SubscriptionPlanId;
+  planName: string;
+  durationMonths: number;
+  startDate: string; // ISO format
+  expiryDate: string; // ISO format
+  status: SubscriptionStatus;
+  pricePaid: number;
+  paymentMethod?: PaymentMethod;
+  autoRenew: boolean;
+  notes?: string;
+  createdAt: number;
+  updatedAt?: number;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -59,6 +126,7 @@ export interface Company {
   currency: Currency;
   taxNumber?: string;
   logoUrl?: string;
+  subscriptionId?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -238,12 +306,22 @@ export interface Expense {
   tripId?: string;
   truckId?: string;
   driverId?: string;
+  userId?: string;
   category: ExpenseCategory;
   amount: number;
   date: string;
   paymentMethod: PaymentMethod;
   description: string;
   receiptUrl?: string;
+  status?: ExpenseStatus;
+  rejectionReason?: string;
+  approvedAt?: number;
+  approvedBy?: string;
+  // Specific for Fuel expenses
+  fuelStation?: string;
+  liters?: number;
+  pricePerLiter?: number;
+  odometerReading?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -263,13 +341,18 @@ export interface CustomerTransaction {
 
 export interface AppNotification {
   id: string;
+  userId?: string; // target user id, or undefined for broadcast / admin
+  targetRole?: UserRole | 'all';
   title: string;
   message: string;
-  category: 'document' | 'maintenance' | 'trip' | 'payment';
-  severity: 'info' | 'warning' | 'urgent';
+  category: 'document' | 'maintenance' | 'trip' | 'payment' | 'user' | 'subscription' | 'expense';
+  type?: 'registration' | 'approval' | 'rejection' | 'subscription' | 'expense' | 'system';
+  severity: 'info' | 'warning' | 'urgent' | 'success';
   date: string;
   isRead: boolean;
   actionUrl?: string;
+  relatedId?: string;
+  createdAt: number;
 }
 
 export interface TimeRangeFilter {
