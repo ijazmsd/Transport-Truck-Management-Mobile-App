@@ -29,6 +29,7 @@ interface Props {
   activeTenantId?: string;
   onSwitchTenant?: (tenantId: string) => void;
   onOpenClientRegistration?: () => void;
+  onRequestLogout?: () => void;
   currentCompany?: Company;
 }
 
@@ -49,6 +50,7 @@ export const MobileFrame: React.FC<Props> = ({
   activeTenantId,
   onSwitchTenant,
   onOpenClientRegistration,
+  onRequestLogout,
   currentCompany,
 }) => {
   const currentTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -133,6 +135,7 @@ export const MobileFrame: React.FC<Props> = ({
                 activeTenantId={activeTenantId}
                 onSwitchTenant={onSwitchTenant}
                 onOpenClientRegistration={onOpenClientRegistration}
+                onRequestLogout={onRequestLogout}
               />
             )}
 

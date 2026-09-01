@@ -164,6 +164,7 @@ class LocalDatabaseManager {
     const authSession: AuthSession = {
       token: sessionToken,
       userId: user.id,
+      user,
       tenantId: user.tenantId || user.companyId,
       role: user.role,
       createdAt: Date.now(),
@@ -186,6 +187,28 @@ class LocalDatabaseManager {
       session: authSession,
       redirectPath,
     };
+  }
+
+  loginAsUser(userId: string): AuthSession {
+    const user = this.getUserById(userId) || this.getAllUsers()[0];
+    const sessionToken = `tb_switch_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    const authSession: AuthSession = {
+      token: sessionToken,
+      userId: user.id,
+      user,
+      tenantId: user.tenantId || user.companyId,
+      role: user.role,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 7 * 86400000,
+      rememberMe: true,
+    };
+
+    this.saveSession(authSession);
+    this.setCurrentUserId(user.id);
+    if (user.tenantId) {
+      this.setActiveTenantId(user.tenantId);
+    }
+    return authSession;
   }
 
   logout(): void {
@@ -462,21 +485,56 @@ class LocalDatabaseManager {
 
   // Complete Company Setup Profile
   completeCompanySetup(
-    tenantId: string,
-    details: {
+    param1:
+      | string
+      | {
+          name?: string;
+          registrationNumber?: string;
+          taxNumber?: string;
+          taxId?: string;
+          bankDetails?: string;
+          city?: string;
+          address?: string;
+          phone?: string;
+          email?: string;
+          currency?: Currency;
+          defaultOrigin?: string;
+          defaultDestination?: string;
+          notes?: string;
+        },
+    param2?: {
+      name?: string;
       registrationNumber?: string;
       taxNumber?: string;
+      taxId?: string;
+      bankDetails?: string;
       city?: string;
       address?: string;
       phone?: string;
+      email?: string;
       currency?: Currency;
+      defaultOrigin?: string;
+      defaultDestination?: string;
+      notes?: string;
     }
   ): Company {
-    const company = this.getCompany(tenantId);
+    let targetTenantId: string;
+    let details: any;
+
+    if (typeof param1 === 'string') {
+      targetTenantId = param1;
+      details = param2 || {};
+    } else {
+      targetTenantId = this.getActiveTenantId();
+      details = param1 || {};
+    }
+
+    const company = this.getCompany(targetTenantId);
     const updated: Company = {
       ...company,
       ...details,
       onboardingStatus: 'completed',
+      onboardingCompleted: true,
       updatedAt: Date.now(),
     };
     this.saveCompany(updated);

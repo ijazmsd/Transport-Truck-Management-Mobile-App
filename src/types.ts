@@ -10,7 +10,7 @@ export type TripStatus = 'Draft' | 'Assigned' | 'In Progress' | 'Completed' | 'C
 
 export type UserRole = 'Provider Admin' | 'Company Admin' | 'Manager' | 'Accountant' | 'Driver' | 'Admin';
 
-export type UserStatus = 'Pending Approval' | 'Active' | 'Rejected' | 'Suspended' | 'Deactivated';
+export type UserStatus = 'Pending Approval' | 'Active' | 'Rejected' | 'Suspended' | 'Deactivated' | 'Disabled';
 
 export type OnboardingStatus = 'registered' | 'subscribed' | 'company_created' | 'completed';
 
@@ -68,6 +68,7 @@ export type MaintenanceType =
 export interface AuthSession {
   token: string;
   userId: string;
+  user?: User;
   tenantId?: string;
   role: UserRole;
   createdAt: number;
@@ -173,9 +174,16 @@ export interface Company {
   status?: 'Active' | 'Suspended' | 'Pending';
   ownerUserId?: string;
   taxNumber?: string;
+  taxId?: string;
+  bankDetails?: string;
+  defaultOrigin?: string;
+  defaultDestination?: string;
+  notes?: string;
   logoUrl?: string;
   subscriptionId?: string;
   onboardingStatus?: OnboardingStatus;
+  onboardingCompleted?: boolean;
+  isSaaSActive?: boolean;
   createdAt: number;
   updatedAt: number;
 }
